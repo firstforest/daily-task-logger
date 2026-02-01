@@ -9,3 +9,6 @@ run = [
 
 [tasks.install]
 run = "node scripts/install-vsix.js"
+
+[tasks.release]
+run = ["npm version patch", "git push", "git push --tags"]
