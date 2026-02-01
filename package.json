@@ -2,7 +2,7 @@
   "name": "daily-task-logger",
   "displayName": "daily-task-logger",
   "description": "",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.108.1"
   },
