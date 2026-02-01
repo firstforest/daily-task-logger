@@ -1,71 +1,42 @@
-# daily-task-logger README
+# daily-task-logger
 
-This is the README for your extension "daily-task-logger". After writing up a brief description, we recommend including the following sections.
+ワークスペース内の Markdown ファイルからタスクとログを集約し、今日の日付に該当するエントリを一覧表示する VS Code 拡張機能です。
 
-## Features
+## 機能
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- ワークスペース内のすべての `.md` ファイルを走査し、タスク（`- [ ]` / `- [x]`）とその配下の日付付きログ（`- YYYY-MM-DD: テキスト`）を抽出します
+- 今日の日付に一致するログのみをフィルタリングして表示します
+- 各タスクにはソースファイルへのクリック可能なリンクが付与され、該当行にジャンプできます
+- 結果は Markdown プレビューとしてサイドパネルに表示されます
 
-For example if there is an image subfolder under your extension project workspace:
+## 使い方
 
-\!\[feature X\]\(images/feature-x.png\)
+コマンドパレット（`Ctrl+Shift+P` / `Cmd+Shift+P`）から **Show Today's Tasks** を実行してください。
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## タスクの書き方
 
-## Requirements
+Markdown ファイルに以下の形式でタスクとログを記述します:
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+```markdown
+- [x] タスク名
+    - 2026-02-01: この日のログエントリ
+- [ ] 別のタスク
+    - 2026-02-01: ログエントリ
+```
 
-## Extension Settings
+- ログ行は親タスク行よりも深いインデントが必要です
+- 対象日付に一致するログのみが出力に含まれます
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## 要件
 
-For example:
+- VS Code 1.108.1 以上
 
-This extension contributes the following settings:
+## 開発
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+```bash
+npm install
+npm run compile    # 型チェック + lint + ビルド（dev）
+npm run watch      # esbuild + tsc の並列ウォッチ
+npm run package    # 型チェック + lint + 本番ビルド（minify）
+npm run test       # テスト実行（VS Code インスタンスが起動します）
+```
