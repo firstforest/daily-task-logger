@@ -47,26 +47,45 @@ export function parseTasks(lines: string[], targetDate: string): ParsedTask[] {
 
 export function activate(context: vscode.ExtensionContext) {
 
-	const myScheme = 'daily-tasks';
-	const myProvider = new TodaysTaskProvider();
+	let currentPanel: vscode.WebviewPanel | undefined;
 
-	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(myScheme, myProvider));
+	const disposable = vscode.commands.registerCommand('daily-task-logger.showToday', async () => {
+		const todayStr = getLocalDateString();
 
-	let disposable = vscode.commands.registerCommand('daily-task-logger.showToday', async () => {
-		// 【修正】ローカル時間の日付を取得
-		const today = getLocalDateString();
-		const uri = vscode.Uri.parse(`${myScheme}:summary/${today}.md`);
+		if (currentPanel) {
+			// 既存パネルがあれば再利用
+			currentPanel.reveal(vscode.ViewColumn.Beside);
+		} else {
+			currentPanel = vscode.window.createWebviewPanel(
+				'dailyTasks',
+				`今日のタスク (${todayStr})`,
+				vscode.ViewColumn.Beside,
+				{ enableScripts: true }
+			);
+			currentPanel.onDidDispose(() => {
+				currentPanel = undefined;
+			}, null, context.subscriptions);
 
-		// コンテンツの再取得を通知してからドキュメントを開く
-		myProvider.refresh(uri);
-		await vscode.workspace.openTextDocument(uri);
-		await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
+			// Webview からのメッセージを受け取りファイルを開く
+			currentPanel.webview.onDidReceiveMessage(async (message: { command: string; fileUri: string; line: number }) => {
+				if (message.command === 'openFile') {
+					const uri = vscode.Uri.parse(message.fileUri);
+					const doc = await vscode.workspace.openTextDocument(uri);
+					await vscode.window.showTextDocument(doc, {
+						selection: new vscode.Range(message.line, 0, message.line, 0),
+						viewColumn: vscode.ViewColumn.One
+					});
+				}
+			}, null, context.subscriptions);
+		}
+
+		currentPanel.webview.html = await buildHtml(todayStr);
 	});
 
 	context.subscriptions.push(disposable);
 }
 
-// 【追加】ローカルタイムゾーンで YYYY-MM-DD を取得する関数
+// ローカルタイムゾーンで YYYY-MM-DD を取得する関数
 function getLocalDateString(): string {
 	const d = new Date();
 	const year = d.getFullYear();
@@ -75,79 +94,121 @@ function getLocalDateString(): string {
 	return `${year}-${month}-${day}`;
 }
 
-class TodaysTaskProvider implements vscode.TextDocumentContentProvider {
+interface FileTaskGroup {
+	fileName: string;
+	tasks: Array<{ isCompleted: boolean; text: string; fileUri: string; line: number; log: string }>;
+}
 
-	private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
-	readonly onDidChange = this._onDidChange.event;
+async function collectTasks(targetDate: string): Promise<FileTaskGroup[]> {
+	const workspaceFiles = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**');
 
-	refresh(uri: vscode.Uri): void {
-		this._onDidChange.fire(uri);
+	// ワークスペース内のファイル + 開いている .md ファイルを合算し、URI で重複排除
+	const seen = new Set<string>();
+	const allFileUris: vscode.Uri[] = [];
+	for (const uri of workspaceFiles) {
+		const key = uri.toString();
+		if (!seen.has(key)) {
+			seen.add(key);
+			allFileUris.push(uri);
+		}
 	}
-
-	async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-		// 【修正】ローカル時間の日付を取得
-		const todayStr = getLocalDateString();
-
-		const workspaceFiles = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**');
-
-		// ワークスペース内のファイル + 開いている .md ファイルを合算し、URI で重複排除
-		const seen = new Set<string>();
-		const allFileUris: vscode.Uri[] = [];
-		for (const uri of workspaceFiles) {
-			const key = uri.toString();
+	for (const doc of vscode.workspace.textDocuments) {
+		if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') {
+			const key = doc.uri.toString();
 			if (!seen.has(key)) {
 				seen.add(key);
-				allFileUris.push(uri);
+				allFileUris.push(doc.uri);
 			}
 		}
-		for (const doc of vscode.workspace.textDocuments) {
-			if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') {
-				const key = doc.uri.toString();
-				if (!seen.has(key)) {
-					seen.add(key);
-					allFileUris.push(doc.uri);
-				}
-			}
-		}
-
-		let outputMarkdown = `# 今日のタスク一覧 (${todayStr})\n\n`;
-		let hasTasks = false;
-
-		for (const fileUri of allFileUris) {
-			if (fileUri.scheme === 'daily-tasks') { continue; }
-
-			const doc = await vscode.workspace.openTextDocument(fileUri);
-			const tasksInFile = this.extractTasks(doc, todayStr);
-
-			if (tasksInFile.length > 0) {
-				hasTasks = true;
-				const relativePath = vscode.workspace.asRelativePath(fileUri);
-				outputMarkdown += `## ${path.basename(relativePath)}\n`;
-
-				for (const task of tasksInFile) {
-					// ジャンプ用のリンクを作成
-					outputMarkdown += `- [${task.isCompleted ? 'x' : ' '}] [${task.text}](${fileUri.path}#L${task.line})\n`;
-					// ログ部分
-					outputMarkdown += `    - 📝 ${task.log}\n`;
-				}
-				outputMarkdown += `\n`;
-			}
-		}
-
-		if (!hasTasks) {
-			outputMarkdown += `今日のタスク（ログ行: ${todayStr}）は見つかりませんでした。\n`;
-			outputMarkdown += `タスクの下に "- ${todayStr}: ログ" を追加してみてください。\n`;
-			outputMarkdown += `※Markdownファイルが保存されているかも確認してください。`;
-		}
-
-		return outputMarkdown;
 	}
 
-	private extractTasks(doc: vscode.TextDocument, targetDate: string): ParsedTask[] {
+	const groups: FileTaskGroup[] = [];
+
+	for (const fileUri of allFileUris) {
+		const doc = await vscode.workspace.openTextDocument(fileUri);
 		const lines: string[] = [];
 		for (let i = 0; i < doc.lineCount; i++) {
 			lines.push(doc.lineAt(i).text);
 		}
-		return parseTasks(lines, targetDate);
+		const tasksInFile = parseTasks(lines, targetDate);
+
+		if (tasksInFile.length > 0) {
+			const relativePath = vscode.workspace.asRelativePath(fileUri);
+			groups.push({
+				fileName: path.basename(relativePath),
+				tasks: tasksInFile.map(t => ({
+					isCompleted: t.isCompleted,
+					text: t.text,
+					fileUri: fileUri.toString(),
+					line: t.line,
+					log: t.log
+				}))
+			});
+		}
 	}
+
+	return groups;
+}
+
+function escapeHtml(text: string): string {
+	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function buildHtml(todayStr: string): Promise<string> {
+	const groups = await collectTasks(todayStr);
+
+	let body = '';
+	if (groups.length === 0) {
+		body = `
+			<p>今日のタスク（ログ行: ${escapeHtml(todayStr)}）は見つかりませんでした。</p>
+			<p>タスクの下に &quot;- ${escapeHtml(todayStr)}: ログ&quot; を追加してみてください。</p>
+			<p>※Markdownファイルが保存されているかも確認してください。</p>`;
+	} else {
+		for (const group of groups) {
+			body += `<h2>${escapeHtml(group.fileName)}</h2>\n<ul>\n`;
+			for (const task of group.tasks) {
+				const checkbox = task.isCompleted ? '&#9745;' : '&#9744;';
+				const dataAttr = `data-uri="${escapeHtml(task.fileUri)}" data-line="${task.line}"`;
+				body += `<li>${checkbox} <a href="#" class="task-link" ${dataAttr}>${escapeHtml(task.text)}</a>\n`;
+				body += `  <br><span class="log">📝 ${escapeHtml(task.log)}</span></li>\n`;
+			}
+			body += `</ul>\n`;
+		}
+	}
+
+	return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>
+	body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px; }
+	h1 { font-size: 1.4em; }
+	h2 { font-size: 1.1em; margin-top: 1.2em; }
+	ul { list-style: none; padding-left: 0; }
+	li { margin-bottom: 8px; }
+	.task-link { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline; }
+	.task-link:hover { color: var(--vscode-textLink-activeForeground); }
+	.log { color: var(--vscode-descriptionForeground); margin-left: 24px; }
+</style>
+</head>
+<body>
+<h1>今日のタスク一覧 (${escapeHtml(todayStr)})</h1>
+${body}
+<script>
+	const vscode = acquireVsCodeApi();
+	document.addEventListener('click', (e) => {
+		const link = e.target.closest('.task-link');
+		if (link) {
+			e.preventDefault();
+			vscode.postMessage({
+				command: 'openFile',
+				fileUri: link.dataset.uri,
+				line: Number(link.dataset.line)
+			});
+		}
+	});
+</script>
+</body>
+</html>`;
 }
