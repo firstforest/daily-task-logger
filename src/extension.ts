@@ -151,6 +151,15 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(disposable);
 
+	// mdファイル保存時にプレビューが開いていれば自動更新
+	const onSaveDisposable = vscode.workspace.onDidSaveTextDocument(async (doc) => {
+		if (currentPanel && doc.languageId === 'markdown') {
+			const todayStr = getLocalDateString();
+			currentPanel.webview.html = await buildHtml(todayStr);
+		}
+	});
+	context.subscriptions.push(onSaveDisposable);
+
 	const addTodayLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTodayLog', async () => {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
