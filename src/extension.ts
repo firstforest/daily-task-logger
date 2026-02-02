@@ -230,6 +230,33 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	context.subscriptions.push(addTomorrowLogDisposable);
+
+	// タスクの完了状態をトグルするコマンド
+	const toggleTaskDisposable = vscode.commands.registerCommand('daily-task-logger.toggleTask', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			return;
+		}
+
+		const document = editor.document;
+		const cursorLine = editor.selection.active.line;
+		const lineText = document.lineAt(cursorLine).text;
+
+		const taskMatch = lineText.match(/^(\s*-\s*\[)([ x])(\]\s*.*)/);
+		if (!taskMatch) {
+			return;
+		}
+
+		const newState = taskMatch[2] === 'x' ? ' ' : 'x';
+		const newText = taskMatch[1] + newState + taskMatch[3];
+
+		await editor.edit(editBuilder => {
+			const lineRange = document.lineAt(cursorLine).range;
+			editBuilder.replace(lineRange, newText);
+		});
+	});
+
+	context.subscriptions.push(toggleTaskDisposable);
 }
 
 // ローカルタイムゾーンで YYYY-MM-DD を取得する関数

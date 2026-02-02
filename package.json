@@ -24,6 +24,10 @@
       {
         "command": "daily-task-logger.addTomorrowLog",
         "title": "Add Tomorrow's Log Entry"
+      },
+      {
+        "command": "daily-task-logger.toggleTask",
+        "title": "Toggle Task Completion"
       }
     ],
     "keybindings": [
@@ -37,6 +41,12 @@
         "command": "daily-task-logger.addTomorrowLog",
         "key": "ctrl+shift+y",
         "mac": "cmd+shift+y",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "daily-task-logger.toggleTask",
+        "key": "ctrl+shift+x",
+        "mac": "cmd+shift+x",
         "when": "editorTextFocus && editorLangId == markdown"
       }
     ],
