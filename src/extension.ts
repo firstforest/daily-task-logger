@@ -160,7 +160,8 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(onSaveDisposable);
 
-	const addTodayLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTodayLog', async () => {
+	// ログエントリを挿入する共通関数
+	async function insertLogEntry(dateStr: string): Promise<void> {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
 			return;
@@ -203,9 +204,8 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const todayStr = getLocalDateString();
 		const logIndent = ' '.repeat(taskIndent + 4);
-		const insertText = `${logIndent}- ${todayStr}: `;
+		const insertText = `${logIndent}- ${dateStr}: `;
 
 		await editor.edit(editBuilder => {
 			const lineEnd = document.lineAt(insertLine).range.end;
@@ -217,14 +217,34 @@ export function activate(context: vscode.ExtensionContext) {
 		const newCol = insertText.length;
 		const newPosition = new vscode.Position(newLine, newCol);
 		editor.selection = new vscode.Selection(newPosition, newPosition);
+	}
+
+	const addTodayLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTodayLog', async () => {
+		await insertLogEntry(getLocalDateString());
 	});
 
 	context.subscriptions.push(addTodayLogDisposable);
+
+	const addTomorrowLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTomorrowLog', async () => {
+		await insertLogEntry(getTomorrowDateString());
+	});
+
+	context.subscriptions.push(addTomorrowLogDisposable);
 }
 
 // ローカルタイムゾーンで YYYY-MM-DD を取得する関数
 function getLocalDateString(): string {
 	const d = new Date();
+	const year = d.getFullYear();
+	const month = String(d.getMonth() + 1).padStart(2, '0');
+	const day = String(d.getDate()).padStart(2, '0');
+	return `${year}-${month}-${day}`;
+}
+
+// ローカルタイムゾーンで明日の YYYY-MM-DD を取得する関数
+function getTomorrowDateString(): string {
+	const d = new Date();
+	d.setDate(d.getDate() + 1);
 	const year = d.getFullYear();
 	const month = String(d.getMonth() + 1).padStart(2, '0');
 	const day = String(d.getDate()).padStart(2, '0');

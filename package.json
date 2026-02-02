@@ -20,6 +20,10 @@
       {
         "command": "daily-task-logger.addTodayLog",
         "title": "Add Today's Log Entry"
+      },
+      {
+        "command": "daily-task-logger.addTomorrowLog",
+        "title": "Add Tomorrow's Log Entry"
       }
     ],
     "keybindings": [
@@ -27,6 +31,12 @@
         "command": "daily-task-logger.addTodayLog",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "daily-task-logger.addTomorrowLog",
+        "key": "ctrl+shift+y",
+        "mac": "cmd+shift+y",
         "when": "editorTextFocus && editorLangId == markdown"
       }
     ],
