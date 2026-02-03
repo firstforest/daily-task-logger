@@ -56,3 +56,16 @@ Log lines must be indented deeper than their parent task line. Tasks are display
 - **esbuild.js** — entry `src/extension.ts` → `dist/extension.js`, platform node, format cjs. Production builds minify; dev builds include sourcemaps.
 - **tsconfig.json** — target ES2022, module Node16, strict mode enabled.
 - **eslint.config.mjs** — enforces camelCase/PascalCase naming, curly braces, strict equality, no throw literals, semicolons.
+
+## Prerequisites
+
+- **Rust toolchain** — `rustc` and `cargo` must be installed (via [rustup](https://rustup.rs/))
+- **wasm-pack** — required for building the WASM parser (`cargo install wasm-pack`)
+- **wasm32-unknown-unknown target** — `rustup target add wasm32-unknown-unknown`
+
+## WASM Parser
+
+The pure parser functions (`parseTasks`, `parseTasksAllDates`) are implemented in Rust (`parser-wasm/src/lib.rs`) and compiled to WebAssembly via wasm-pack. The TypeScript wrapper (`src/parser.ts`) re-exports them, and `src/extension.ts` re-exports from `parser.ts` to maintain the existing public API.
+
+- `npm run build:wasm` — compiles Rust to WASM and outputs glue code to `src/pkg/`
+- The esbuild plugin copies `parser_wasm_bg.wasm` to `dist/` during bundling
