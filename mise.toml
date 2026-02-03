@@ -1,5 +1,6 @@
 [tools]
 node = "latest"
+rust = "latest"
 
 [tasks.download]
 run = [

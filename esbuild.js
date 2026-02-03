@@ -1,4 +1,6 @@
 const esbuild = require("esbuild");
+const fs = require("fs");
+const path = require("path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -23,6 +25,22 @@ const esbuildProblemMatcherPlugin = {
 	},
 };
 
+/**
+ * @type {import('esbuild').Plugin}
+ */
+const wasmCopyPlugin = {
+	name: 'wasm-copy',
+	setup(build) {
+		build.onEnd(() => {
+			const src = path.resolve(__dirname, 'src/pkg/parser_wasm_bg.wasm');
+			const dst = path.resolve(__dirname, 'dist/parser_wasm_bg.wasm');
+			if (fs.existsSync(src)) {
+				fs.copyFileSync(src, dst);
+			}
+		});
+	},
+};
+
 async function main() {
 	const ctx = await esbuild.context({
 		entryPoints: [
@@ -38,7 +56,7 @@ async function main() {
 		external: ['vscode'],
 		logLevel: 'silent',
 		plugins: [
-			/* add to the end of plugins array */
+			wasmCopyPlugin,
 			esbuildProblemMatcherPlugin,
 		],
 	});
