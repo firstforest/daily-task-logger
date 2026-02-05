@@ -1,4 +1,4 @@
-# daily-task-logger
+# taski
 
 ワークスペース内の Markdown ファイルからタスクとログを集約し、日付ごとに整理して表示する VS Code 拡張機能です。
 
@@ -15,10 +15,10 @@
 
 | コマンド | タイトル | キーバインド（Mac） | キーバインド（Win/Linux） |
 |---|---|---|---|
-| `daily-task-logger.showToday` | Show Today's Tasks | — | — |
-| `daily-task-logger.addTodayLog` | Add Today's Log Entry | `Cmd+Shift+T` | `Ctrl+Shift+T` |
-| `daily-task-logger.addTomorrowLog` | Add Tomorrow's Log Entry | `Cmd+Shift+Y` | `Ctrl+Shift+Y` |
-| `daily-task-logger.toggleTask` | Toggle Task Completion | `Cmd+Shift+X` | `Ctrl+Shift+X` |
+| `taski.showToday` | Show Today's Tasks | — | — |
+| `taski.addTodayLog` | Add Today's Log Entry | `Cmd+Shift+T` | `Ctrl+Shift+T` |
+| `taski.addTomorrowLog` | Add Tomorrow's Log Entry | `Cmd+Shift+Y` | `Ctrl+Shift+Y` |
+| `taski.toggleTask` | Toggle Task Completion | `Cmd+Shift+X` | `Ctrl+Shift+X` |
 
 キーバインド付きのコマンドは、Markdown ファイルの編集中（`editorTextFocus && editorLangId == markdown`）のみ有効です。
 
@@ -38,8 +38,8 @@
 
 | 設定 | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `daily-task-logger.excludeDirectories` | `string[]` | `[]` | スキャン対象から除外するディレクトリの glob パターン一覧（例: `**/archive/**`） |
-| `daily-task-logger.additionalDirectories` | `string[]` | `[]` | 追加でスキャンするディレクトリのパス一覧（絶対パス） |
+| `taski.excludeDirectories` | `string[]` | `[]` | スキャン対象から除外するディレクトリの glob パターン一覧（例: `**/archive/**`） |
+| `taski.additionalDirectories` | `string[]` | `[]` | 追加でスキャンするディレクトリのパス一覧（絶対パス） |
 
 ## タスクの書き方
 

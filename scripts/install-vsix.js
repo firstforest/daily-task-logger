@@ -2,7 +2,7 @@ const { readdirSync } = require("fs");
 const { execSync } = require("child_process");
 
 const files = readdirSync(".").filter(
-  (n) => n.startsWith("daily-task-logger-") && n.endsWith(".vsix")
+  (n) => n.startsWith("taski-") && n.endsWith(".vsix")
 );
 
 if (!files.length) {

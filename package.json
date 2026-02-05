@@ -1,7 +1,7 @@
 {
-  "name": "daily-task-logger",
-  "displayName": "daily-task-logger",
-  "description": "",
+  "name": "taski",
+  "displayName": "Taski",
+  "description": "Aggregate tasks from markdown files and display them organized by date",
   "version": "0.0.8",
   "engines": {
     "vscode": "^1.108.1"
@@ -14,46 +14,46 @@
   "contributes": {
     "commands": [
       {
-        "command": "daily-task-logger.showToday",
+        "command": "taski.showToday",
         "title": "Show Today's Tasks"
       },
       {
-        "command": "daily-task-logger.addTodayLog",
+        "command": "taski.addTodayLog",
         "title": "Add Today's Log Entry"
       },
       {
-        "command": "daily-task-logger.addTomorrowLog",
+        "command": "taski.addTomorrowLog",
         "title": "Add Tomorrow's Log Entry"
       },
       {
-        "command": "daily-task-logger.toggleTask",
+        "command": "taski.toggleTask",
         "title": "Toggle Task Completion"
       }
     ],
     "keybindings": [
       {
-        "command": "daily-task-logger.addTodayLog",
+        "command": "taski.addTodayLog",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
-        "command": "daily-task-logger.addTomorrowLog",
+        "command": "taski.addTomorrowLog",
         "key": "ctrl+shift+y",
         "mac": "cmd+shift+y",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
-        "command": "daily-task-logger.toggleTask",
+        "command": "taski.toggleTask",
         "key": "ctrl+shift+x",
         "mac": "cmd+shift+x",
         "when": "editorTextFocus && editorLangId == markdown"
       }
     ],
     "configuration": {
-      "title": "Daily Task Logger",
+      "title": "Taski",
       "properties": {
-        "daily-task-logger.excludeDirectories": {
+        "taski.excludeDirectories": {
           "type": "array",
           "items": {
             "type": "string"
@@ -61,7 +61,7 @@
           "default": [],
           "description": "スキャン対象から除外するディレクトリのglobパターン一覧（例: **/archive/**, **/backup/**）"
         },
-        "daily-task-logger.additionalDirectories": {
+        "taski.additionalDirectories": {
           "type": "array",
           "items": {
             "type": "string"

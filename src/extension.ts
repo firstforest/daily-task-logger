@@ -19,7 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	let currentPanel: vscode.WebviewPanel | undefined;
 
-	const disposable = vscode.commands.registerCommand('daily-task-logger.showToday', async () => {
+	const disposable = vscode.commands.registerCommand('taski.showToday', async () => {
 		const todayStr = getLocalDateString();
 
 		if (currentPanel) {
@@ -122,20 +122,20 @@ export function activate(context: vscode.ExtensionContext) {
 		editor.selection = new vscode.Selection(newPosition, newPosition);
 	}
 
-	const addTodayLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTodayLog', async () => {
+	const addTodayLogDisposable = vscode.commands.registerCommand('taski.addTodayLog', async () => {
 		await insertLogEntry(getLocalDateString());
 	});
 
 	context.subscriptions.push(addTodayLogDisposable);
 
-	const addTomorrowLogDisposable = vscode.commands.registerCommand('daily-task-logger.addTomorrowLog', async () => {
+	const addTomorrowLogDisposable = vscode.commands.registerCommand('taski.addTomorrowLog', async () => {
 		await insertLogEntry(getTomorrowDateString());
 	});
 
 	context.subscriptions.push(addTomorrowLogDisposable);
 
 	// タスクの完了状態をトグルするコマンド
-	const toggleTaskDisposable = vscode.commands.registerCommand('daily-task-logger.toggleTask', async () => {
+	const toggleTaskDisposable = vscode.commands.registerCommand('taski.toggleTask', async () => {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
 			return;
@@ -227,7 +227,7 @@ async function findMarkdownFilesInDirectory(dirUri: vscode.Uri, excludePatterns:
 }
 
 async function findAllMarkdownUris(): Promise<vscode.Uri[]> {
-	const config = vscode.workspace.getConfiguration('daily-task-logger');
+	const config = vscode.workspace.getConfiguration('taski');
 	const excludeDirs: string[] = config.get<string[]>('excludeDirectories', []);
 
 	// findFiles の除外パターンを構築（node_modules + ユーザー指定）

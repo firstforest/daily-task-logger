@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VS Code extension ("daily-task-logger") that aggregates tasks from markdown files across the workspace and displays them organized by date with clickable links back to source files. Written in TypeScript, bundled with esbuild, outputs to `dist/extension.js` as CommonJS. UI strings and code comments are in Japanese.
+VS Code extension ("taski") that aggregates tasks from markdown files across the workspace and displays them organized by date with clickable links back to source files. Written in TypeScript, bundled with esbuild, outputs to `dist/extension.js` as CommonJS. UI strings and code comments are in Japanese.
 
 ## Commands
 
@@ -48,8 +48,8 @@ Log lines must be indented deeper than their parent task line. Tasks are display
 
 ## Configuration Settings
 
-- **`daily-task-logger.excludeDirectories`** — glob patterns for directories to exclude from scanning (e.g., `**/archive/**`)
-- **`daily-task-logger.additionalDirectories`** — absolute paths of additional directories to scan beyond the workspace
+- **`taski.excludeDirectories`** — glob patterns for directories to exclude from scanning (e.g., `**/archive/**`)
+- **`taski.additionalDirectories`** — absolute paths of additional directories to scan beyond the workspace
 
 ## Build Configuration
 
