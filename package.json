@@ -88,6 +88,11 @@
     "configuration": {
       "title": "Taski",
       "properties": {
+        "taski.includeWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "現在のワークスペースをスキャン対象に含めるかどうか"
+        },
         "taski.excludeDirectories": {
           "type": "array",
           "items": {

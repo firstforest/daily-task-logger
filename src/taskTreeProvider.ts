@@ -300,20 +300,27 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 	private async findAllMarkdownUris(): Promise<vscode.Uri[]> {
 		const config = vscode.workspace.getConfiguration('taski');
 		const excludeDirs: string[] = config.get<string[]>('excludeDirectories', []);
-
-		const excludePatterns = ['**/node_modules/**', ...excludeDirs];
-		const excludeGlob = `{${excludePatterns.join(',')}}`;
-		const workspaceFiles = await vscode.workspace.findFiles('**/*.md', excludeGlob);
+		const includeWorkspace: boolean = config.get<boolean>('includeWorkspace', false);
 
 		const seen = new Set<string>();
 		const allFileUris: vscode.Uri[] = [];
-		for (const uri of workspaceFiles) {
-			const key = uri.toString();
-			if (!seen.has(key)) {
-				seen.add(key);
-				allFileUris.push(uri);
+
+		// ワークスペースのスキャン（設定で有効な場合のみ）
+		if (includeWorkspace) {
+			const excludePatterns = ['**/node_modules/**', ...excludeDirs];
+			const excludeGlob = `{${excludePatterns.join(',')}}`;
+			const workspaceFiles = await vscode.workspace.findFiles('**/*.md', excludeGlob);
+
+			for (const uri of workspaceFiles) {
+				const key = uri.toString();
+				if (!seen.has(key)) {
+					seen.add(key);
+					allFileUris.push(uri);
+				}
 			}
 		}
+
+		// 開いているマークダウンドキュメントは常に含める
 		for (const doc of vscode.workspace.textDocuments) {
 			if (doc.uri.scheme === 'file' && doc.languageId === 'markdown') {
 				const key = doc.uri.toString();

@@ -48,6 +48,7 @@ Log lines must be indented deeper than their parent task line. Tasks are display
 
 ## Configuration Settings
 
+- **`taski.includeWorkspace`** — whether to scan the current workspace for markdown files (default: `false`)
 - **`taski.excludeDirectories`** — glob patterns for directories to exclude from scanning (e.g., `**/archive/**`)
 - **`taski.additionalDirectories`** — absolute paths of additional directories to scan beyond the workspace
 
