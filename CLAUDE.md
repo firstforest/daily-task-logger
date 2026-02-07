@@ -19,16 +19,17 @@ Tests require compilation to `out/` first (`npm run compile-tests`), but `npm ru
 
 ## Architecture
 
-Extension with four commands (`showToday`, `addTodayLog`, `addTomorrowLog`, `toggleTask`) in one main source file:
+Extension with six commands (`showToday`, `refreshTasks`, `addTodayLog`, `addTomorrowLog`, `toggleTask`, `openTodayJournal`) across two main source files:
 
-- **`src/extension.ts`** — contains these key parts:
-  1. **`parseTasks(lines, targetDate)`** — pure function (no VS Code dependency) that parses task checkboxes and their date-prefixed log entries for a specific date. Exported for direct unit testing.
-  2. **`parseTasksAllDates(lines)`** — pure function that parses all tasks and log entries across all dates. Tasks without any log entries are returned with `date: ''` and `log: ''`. Exported for direct unit testing.
-  3. **`collectAllTasks()`** — scans all `.md` files in the workspace, delegates parsing to `parseTasksAllDates`, and returns a `Map<string, FileTaskGroup[]>` keyed by date string.
-  4. **`buildHtml(todayStr)`** — renders the Webview HTML with tasks grouped by date: today first, then other dates in reverse chronological order, then tasks with no date.
+- **`src/extension.ts`** — extension activation, command registration, and re-exports parser functions from `parser.ts`.
+
+- **`src/taskTreeProvider.ts`** — TreeView implementation:
+  - **`TaskTreeItem`** — TreeItem subclass with node types: `date`, `file`, `task`, `log`. Each type has color-coded icons (today=green, past=orange, completed=green, incomplete=yellow, etc.).
+  - **`TaskTreeProvider`** — TreeDataProvider that scans markdown files, groups tasks by date, and builds the tree hierarchy (date → file → task → log).
+
+- **`src/parser.ts`** — TypeScript wrapper that re-exports WASM parser functions.
 
 - **`src/test/parseTasks.test.ts`** — Mocha unit tests for `parseTasks` and `parseTasksAllDates` (19 test cases covering date filtering, indentation rules, nested tasks, no-date tasks, edge cases).
-- **`src/test/extension.test.ts`** — Placeholder integration test suite.
 
 The extension has no runtime dependencies beyond the VS Code API. The `vscode` module is marked external in esbuild since VS Code provides it at runtime.
 

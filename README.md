@@ -8,23 +8,29 @@
 - 今日のタスクを最優先で表示し、その下に他の日付のタスクを新しい順に表示します
 - ログ行がないタスクも「日付なし」セクションとして表示されます
 - 各タスクにはソースファイルへのクリック可能なリンクが付与され、該当行にジャンプできます
-- 結果は Webview パネルとしてサイドパネルに表示されます
-- Markdown ファイルの保存時にプレビューが自動更新されます
+- 結果はアクティビティバーの専用アイコンからアクセスできる TreeView として表示されます
+- Markdown ファイルの保存時にビューが自動更新されます
 
 ## コマンド
 
-| コマンド               | タイトル                 | キーバインド（Mac） | キーバインド（Win/Linux） |
-| ---------------------- | ------------------------ | ------------------- | ------------------------- |
-| `taski.showToday`      | Show Today's Tasks       | —                   | —                         |
-| `taski.addTodayLog`    | Add Today's Log Entry    | `Cmd+Shift+T`       | `Ctrl+Shift+T`            |
-| `taski.addTomorrowLog` | Add Tomorrow's Log Entry | `Cmd+Shift+Y`       | `Ctrl+Shift+Y`            |
-| `taski.toggleTask`     | Toggle Task Completion   | `Cmd+Shift+X`       | `Ctrl+Shift+X`            |
+| コマンド                 | タイトル                 | キーバインド（Mac） | キーバインド（Win/Linux） |
+| ------------------------ | ------------------------ | ------------------- | ------------------------- |
+| `taski.showToday`        | Show Today's Tasks       | —                   | —                         |
+| `taski.refreshTasks`     | Refresh Tasks            | —                   | —                         |
+| `taski.addTodayLog`      | Add Today's Log Entry    | `Cmd+Shift+T`       | `Ctrl+Shift+T`            |
+| `taski.addTomorrowLog`   | Add Tomorrow's Log Entry | `Cmd+Shift+Y`       | `Ctrl+Shift+Y`            |
+| `taski.toggleTask`       | Toggle Task Completion   | `Cmd+Shift+X`       | `Ctrl+Shift+X`            |
+| `taski.openTodayJournal` | Open Today's Journal     | —                   | —                         |
 
 キーバインド付きのコマンドは、Markdown ファイルの編集中（`editorTextFocus && editorLangId == markdown`）のみ有効です。
 
 ### Show Today's Tasks
 
-コマンドパレット（`Ctrl+Shift+P` / `Cmd+Shift+P`）から実行すると、Webview パネルにタスク一覧を表示します。
+コマンドパレット（`Ctrl+Shift+P` / `Cmd+Shift+P`）から実行すると、TreeView にタスク一覧を表示します。
+
+### Refresh Tasks
+
+TreeView のタイトルバーにあるリフレッシュボタン、またはコマンドパレットから実行すると、タスク一覧を再スキャンして更新します。
 
 ### Add Today's Log Entry / Add Tomorrow's Log Entry
 
@@ -34,10 +40,15 @@
 
 カーソルがタスク行にある状態で実行すると、`[ ]` と `[x]` をトグルします。
 
+### Open Today's Journal
+
+今日の日付のジャーナルファイルを開きます。
+
 ## 設定
 
 | 設定                          | 型         | デフォルト | 説明                                                                            |
 | ----------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------- |
+| `taski.includeWorkspace`      | `boolean`  | `false`    | 現在のワークスペースをスキャン対象に含めるかどうか                              |
 | `taski.excludeDirectories`    | `string[]` | `[]`       | スキャン対象から除外するディレクトリの glob パターン一覧（例: `**/archive/**`） |
 | `taski.additionalDirectories` | `string[]` | `[]`       | 追加でスキャンするディレクトリのパス一覧（絶対パス）                            |
 
