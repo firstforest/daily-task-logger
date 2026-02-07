@@ -12,10 +12,32 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "taski",
+          "title": "Taski",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
+    "views": {
+      "taski": [
+        {
+          "id": "taskiView",
+          "name": "タスク一覧"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "taski.showToday",
         "title": "Show Today's Tasks"
+      },
+      {
+        "command": "taski.refreshTasks",
+        "title": "Refresh Tasks",
+        "icon": "$(refresh)"
       },
       {
         "command": "taski.addTodayLog",
@@ -54,6 +76,15 @@
         "when": "editorTextFocus && editorLangId == markdown"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "taski.refreshTasks",
+          "when": "view == taskiView",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Taski",
       "properties": {
