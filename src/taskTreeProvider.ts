@@ -29,17 +29,30 @@ export class TaskTreeItem extends vscode.TreeItem {
 		public readonly collapsibleState: vscode.TreeItemCollapsibleState,
 		public readonly dateKey?: string,
 		public readonly fileGroup?: FileTaskGroup,
-		public readonly task?: TaskData
+		public readonly task?: TaskData,
+		public readonly isToday?: boolean
 	) {
 		super(label, collapsibleState);
 		this.contextValue = nodeType;
 
 		if (nodeType === 'date') {
-			this.iconPath = new vscode.ThemeIcon('calendar');
+			// 今日: 緑、過去: オレンジ、日付なし: グレー
+			if (isToday) {
+				this.iconPath = new vscode.ThemeIcon('calendar', new vscode.ThemeColor('charts.green'));
+			} else if (dateKey === '') {
+				this.iconPath = new vscode.ThemeIcon('calendar', new vscode.ThemeColor('disabledForeground'));
+			} else {
+				this.iconPath = new vscode.ThemeIcon('calendar', new vscode.ThemeColor('charts.orange'));
+			}
 		} else if (nodeType === 'file') {
-			this.iconPath = new vscode.ThemeIcon('file');
+			this.iconPath = new vscode.ThemeIcon('file-text', new vscode.ThemeColor('charts.blue'));
 		} else if (nodeType === 'task' && task) {
-			this.iconPath = new vscode.ThemeIcon(task.isCompleted ? 'pass' : 'circle-outline');
+			// 完了: 緑、未完了: 黄色
+			if (task.isCompleted) {
+				this.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('charts.green'));
+			} else {
+				this.iconPath = new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('charts.yellow'));
+			}
 			// タスクをクリックしたらファイルを開く
 			this.command = {
 				command: 'taski.openTaskLocation',
@@ -47,7 +60,7 @@ export class TaskTreeItem extends vscode.TreeItem {
 				arguments: [task.fileUri, task.line]
 			};
 		} else if (nodeType === 'log') {
-			this.iconPath = new vscode.ThemeIcon('note');
+			this.iconPath = new vscode.ThemeIcon('note', new vscode.ThemeColor('charts.purple'));
 		}
 	}
 }
@@ -90,7 +103,7 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 
 		if (element.nodeType === 'file' && element.fileGroup) {
 			// ファイルノードの子: タスクノードを返す
-			return this.getTaskNodes(element.fileGroup, element.dateKey === this.todayStr);
+			return this.getTaskNodes(element.fileGroup);
 		}
 
 		if (element.nodeType === 'task' && element.task?.log) {
@@ -119,7 +132,10 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 				'date',
 				`今日 (${this.todayStr})`,
 				vscode.TreeItemCollapsibleState.Expanded,
-				this.todayStr
+				this.todayStr,
+				undefined,
+				undefined,
+				true
 			));
 		}
 
@@ -138,7 +154,10 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 					'date',
 					date,
 					vscode.TreeItemCollapsibleState.Collapsed,
-					date
+					date,
+					undefined,
+					undefined,
+					false
 				));
 			}
 		}
@@ -152,7 +171,10 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 					'date',
 					'日付なし',
 					vscode.TreeItemCollapsibleState.Collapsed,
-					''
+					'',
+					undefined,
+					undefined,
+					false
 				));
 			}
 		}
@@ -194,7 +216,7 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 		return nodes;
 	}
 
-	private getTaskNodes(fileGroup: FileTaskGroup, isToday: boolean): TaskTreeItem[] {
+	private getTaskNodes(fileGroup: FileTaskGroup): TaskTreeItem[] {
 		// 完了タスクを後ろにソート
 		const sorted = [...fileGroup.tasks].sort((a, b) => Number(a.isCompleted) - Number(b.isCompleted));
 
