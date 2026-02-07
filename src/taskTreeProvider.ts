@@ -128,9 +128,20 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskTreeItem> {
 		// 今日のタスク
 		const todayGroups = this.dateMap.get(this.todayStr);
 		if (todayGroups && todayGroups.length > 0) {
+			// 進捗を計算
+			let totalTasks = 0;
+			let completedTasks = 0;
+			for (const group of todayGroups) {
+				for (const task of group.tasks) {
+					totalTasks++;
+					if (task.isCompleted) {
+						completedTasks++;
+					}
+				}
+			}
 			nodes.push(new TaskTreeItem(
 				'date',
-				`今日 (${this.todayStr})`,
+				`今日 (${this.todayStr}) (${completedTasks}/${totalTasks})`,
 				vscode.TreeItemCollapsibleState.Expanded,
 				this.todayStr,
 				undefined,
