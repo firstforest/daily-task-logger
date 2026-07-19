@@ -550,6 +550,7 @@ pub fn build_schedule_data_internal(
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
     Active,
+    Someday,
     Done,
 }
 
@@ -594,7 +595,7 @@ pub fn extract_tags(text: &str) -> Vec<String> {
 }
 
 /// `project: active` が front matter にあればファイル名 (拡張子除去・空白は `_`) を
-/// 唯一のタグとして返す。`done` や未指定の場合は空配列。
+/// 唯一のタグとして返す。`someday`（棚上げ）・`done`・未指定の場合は空配列。
 pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
     let Some(fm) = parse_front_matter(lines) else {
         return Vec::new();
@@ -1512,6 +1513,13 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_front_matter_project_someday() {
+        let l = lines(&["---", "project: someday", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.project, Some(ProjectStatus::Someday));
+    }
+
+    #[test]
     fn test_parse_front_matter_project_done() {
         let l = lines(&["---", "project: done", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
@@ -1571,6 +1579,13 @@ mod tests {
             extract_file_tags(&l, "2026-04-14 会議メモ.md"),
             vec![s("2026-04-14_会議メモ")]
         );
+    }
+
+    #[test]
+    fn test_extract_file_tags_project_someday() {
+        let l = lines(&["---", "project: someday", "---"]);
+        let empty: Vec<String> = vec![];
+        assert_eq!(extract_file_tags(&l, "projectA.md"), empty);
     }
 
     #[test]
