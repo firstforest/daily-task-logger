@@ -4,6 +4,12 @@ All notable changes to the "taski" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.0.34] - 2026-07-19
+
+### Added
+
+- プロジェクト状態に someday（棚上げ）を追加しました
+
 ## [0.0.33] - 2026-06-07
 
 ### Added
