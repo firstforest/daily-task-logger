@@ -1,3 +1,5 @@
+mod pj;
+
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use parser_core::{
@@ -80,6 +82,28 @@ enum Commands {
         /// 出力フォーマット（json）
         #[arg(long, short)]
         format: Option<String>,
+    },
+    /// PJ 横断の状態を表示
+    Pj {
+        /// 出力フォーマット（table, json。省略時は table）
+        #[arg(long, short)]
+        format: Option<String>,
+
+        /// カンマ区切りで status を絞る（active, someday, done）
+        #[arg(long, short)]
+        status: Option<String>,
+
+        /// status で絞らず全件表示（done を含む）
+        #[arg(long, conflicts_with = "status")]
+        all: bool,
+
+        /// 基準日（YYYY-MM-DD、省略時は今日）。停滞日数の計算に使う
+        #[arg(long)]
+        today: Option<String>,
+
+        /// repo: のリポジトリを fetch しない（速いが repo の日付が古い可能性がある）
+        #[arg(long)]
+        no_fetch: bool,
     },
 }
 
@@ -661,6 +685,15 @@ fn main() {
         }
         Commands::Resolve { name, no_create, format } => {
             resolve_wiki(&name, no_create, format);
+        }
+        Commands::Pj {
+            format,
+            status,
+            all,
+            today,
+            no_fetch,
+        } => {
+            pj::run(taski_dir(), format, status, all, today, no_fetch);
         }
     }
 }

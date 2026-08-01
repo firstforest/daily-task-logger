@@ -4,6 +4,14 @@ All notable changes to the "taski" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [Unreleased]
+
+### Added
+
+- CLI に `taski pj` サブコマンドを追加しました。`note/` の front matter に `project:` を持つ PJ ノートを横断し、「次の予定」「ログの鮮度」「journal での言及」「`repo:` のリポジトリの未反映コミット」を PJ 軸で集約して表示します（`--format table|json`、`--status`、`--all`、`--today`）。
+- PJ ノートの front matter に `repo:`（作業実体のリポジトリ）と `completed:`（完了日）を追加しました。
+- `taski pj` は既定で `repo:` のリポジトリを並列に `git fetch` してから読みます。ローカルの clone が古いまま報告されるのを防ぐためです。即答性が要る場合は `--no-fetch` で省略できます。
+
 ## [0.0.34] - 2026-07-19
 
 ### Added

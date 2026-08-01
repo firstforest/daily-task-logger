@@ -48,7 +48,9 @@ taski は VS Code 拡張と Rust CLI の 2 つのフロントエンドを持ち�
 - `build_tree_data` — 日付 → ファイル → タスク → ログ の階層ツリーを構築
 - `build_schedule_data` — スケジュール（時刻付き項目）を構築
 
-補助ロジック: front matter 解析、`#tag` 抽出 (`extract_tags`)、ファイル単位の自動タグ (`extract_file_tags`)、Wiki リンク正規化・解決 (`parser-core/src/wiki_link.rs`)。
+補助ロジック: front matter 解析、`#tag` 抽出 (`extract_tags`)、ファイル単位の自動タグ (`extract_file_tags`)、Wiki リンク正規化・解決 (`parser-core/src/wiki_link.rs`)、PJ ノートの日報形式の解析 (`parser-core/src/pj.rs`)。
+
+`parser-core/src/pj.rs` は PJ ノート（front matter に `project:` を持つ `note/*.md`）を扱う。`## 次の予定` / `## ログ` / `## オープンタスク` のセクション分割、Next Action の抽出、判断メタデータ（`（45分・重・@PC）`）の分離、health 判定までを担う。git・ファイルシステムに依存する集約（note の最終更新日、journal の言及、`repo:` の未反映コミット）は `cli/src/pj.rs` 側の責務で、CLI の `pj` サブコマンドから使う。
 
 ## VS Code 拡張の主要ソース
 
