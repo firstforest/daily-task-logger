@@ -4,50 +4,11 @@
 //! 返すと、呼び出し側は正常系でパースに失敗する。`project: someday` / `project: done` の
 //! ノートは自動タグが付かないので、PJ 名でタグを引くと 0 件は正常系として起きる。
 
-use std::fs;
-use std::path::{Path, PathBuf};
+mod common;
+
+use common::{make_empty_taski, write_md, TempHome};
+use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// テスト用の一時ディレクトリ。Drop で消す。
-struct TempHome(PathBuf);
-
-impl TempHome {
-    fn new(label: &str) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "taski-list-{label}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        TempHome(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempHome {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// `$HOME/taski/<name>` に Markdown を書く。
-fn write_md(home: &Path, name: &str, body: &str) {
-    let path = home.join("taski").join(name);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, body).unwrap();
-}
-
-/// `$HOME/taski` だけ作ってファイルは置かない。
-fn make_empty_taski(home: &Path) {
-    fs::create_dir_all(home.join("taski")).unwrap();
-}
 
 struct Output {
     success: bool,

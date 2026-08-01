@@ -49,7 +49,7 @@ VS Code extension ("taski") that aggregates tasks from markdown files across the
 ロジックを Rust に移す際は、テストも Rust 側で書くこと。
 
 - **`parser-core/src/*.rs`** — パースロジックの単体テストは実装と同じファイルの `#[cfg(test)] mod tests` に置く。仕様の網羅はここで行う。
-- **`cli/tests/<サブコマンド>_cli.rs`** — CLI の統合テスト。サブコマンドごとに 1 ファイル（`pj_cli.rs` / `list_cli.rs`）。一時ディレクトリを `$HOME` に見立てて実際のファイル・git リポジトリを作り、ビルド済みバイナリを起動して端から端まで検証する（`pj` の未反映検出が git のコミット日に依存し、構造化出力の契約はプロセスの標準出力でしか確かめられないため）。
+- **`cli/tests/<サブコマンド>_cli.rs`** — CLI の統合テスト。サブコマンドごとに 1 ファイル（`pj_cli.rs` / `list_cli.rs` / `schedule_cli.rs`）。一時ディレクトリを `$HOME` に見立てて実際のファイル・git リポジトリを作り、ビルド済みバイナリを起動して端から端まで検証する（`pj` の未反映検出が git のコミット日に依存し、構造化出力の契約はプロセスの標準出力でしか確かめられないため）。統合テストはファイルごとに別クレートなので、共通ヘルパ（`TempHome` 等）は `cli/tests/common/mod.rs` に置き各ファイルから `mod common;` で取り込む。
 - **`src/test/*.test.ts`** — WASM 越しの薄い回帰テストのみ。実行に VS Code インスタンスの起動が必要なので、網羅は Rust 側に寄せる。
 
 ### 単一テストの実行

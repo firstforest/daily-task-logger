@@ -5,35 +5,13 @@
 //! 判定が厳密大なり（`repo_last > log_last`）である以上、
 //! 「同日のコミットは反映済み」という境界の扱いがフラグと件数で食い違いやすい。
 
+mod common;
+
+use common::TempHome;
+use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// テスト用の一時ディレクトリ。Drop で消す。
-struct TempHome(PathBuf);
-
-impl TempHome {
-    fn new(label: &str) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("taski-pj-{label}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        TempHome(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempHome {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn git(repo: &Path, args: &[&str], date: Option<&str>) {
     git_dates(repo, args, date, date);
@@ -527,11 +505,7 @@ fn test_fetch_updates_stale_clone() {
     let clone = root.join("repo-clone");
     git(
         root,
-        &[
-            "clone",
-            &origin.to_string_lossy(),
-            &clone.to_string_lossy(),
-        ],
+        &["clone", &origin.to_string_lossy(), &clone.to_string_lossy()],
         None,
     );
     commit_file(
@@ -553,7 +527,10 @@ fn test_fetch_updates_stale_clone() {
     let head_before = rev_parse(&clone);
 
     // fetch しなければ clone が知っている 07-20 までしか見えない
-    let json = run_pj(root, &["--format", "json", "--no-fetch", "--today", "2026-08-01"]);
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-01"],
+    );
     let p = find(&json, "古いclonePJ");
     assert_eq!(p["repo_last"], "2026-07-20");
     assert_eq!(p["unreported"], false);
@@ -682,9 +659,16 @@ fn test_past_today_reproduces_that_days_state() {
     // note の最終更新日（git 基準）も基準日より後なので、07-25 時点では未コミット扱い
     git(&taski, &["init"], None);
     git(&taski, &["add", "."], None);
-    git(&taski, &["commit", "-m", "初回"], Some("2026-07-30T12:00:00+09:00"));
+    git(
+        &taski,
+        &["commit", "-m", "初回"],
+        Some("2026-07-30T12:00:00+09:00"),
+    );
 
-    let json = run_pj(root, &["--format", "json", "--no-fetch", "--today", "2026-07-25"]);
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-07-25"],
+    );
     let p = find(&json, "振り返りPJ");
 
     assert_eq!(p["log_last"], "2026-07-18");
@@ -716,7 +700,10 @@ fn test_past_today_reproduces_that_days_state() {
     }
 
     // 基準日を今日側に戻せば、後ろのログもコミットも見える
-    let json = run_pj(root, &["--format", "json", "--no-fetch", "--today", "2026-08-02"]);
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-02"],
+    );
     let p = find(&json, "振り返りPJ");
     assert_eq!(p["log_last"], "2026-08-01");
     assert_eq!(p["repo_last"], "2026-07-31");
@@ -747,10 +734,21 @@ fn test_past_today_table_has_no_negative_days() {
         .expect("taski を実行できません");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(!stdout.contains("-7d"), "負の日数が出ている:\n{stdout}");
+    // 特定の文字列（`-7d`）ではなく日数セルの形で見る。書式が変わっても素通りしないように。
+    let negative_days = Regex::new(r"-\d+d").unwrap();
+    assert!(
+        !negative_days.is_match(&stdout),
+        "負の日数が出ている:\n{stdout}"
+    );
     // 基準日時点ではログもコミットも無いので `-` になる
-    assert!(stdout.contains("未来コミットPJ"), "PJ が出ていない:\n{stdout}");
-    assert!(stdout.contains("未反映 0件"), "未反映が数えられている:\n{stdout}");
+    assert!(
+        stdout.contains("未来コミットPJ"),
+        "PJ が出ていない:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("未反映 0件"),
+        "未反映が数えられている:\n{stdout}"
+    );
 }
 
 #[test]
