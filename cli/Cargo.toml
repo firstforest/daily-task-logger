@@ -11,5 +11,8 @@ path = "src/main.rs"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 parser-core = { path = "../parser-core" }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+unicode-width = "0.2"

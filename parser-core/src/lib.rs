@@ -1,3 +1,4 @@
+pub mod pj;
 pub mod wiki_link;
 
 use std::collections::HashMap;
@@ -558,6 +559,12 @@ pub enum ProjectStatus {
 pub struct FrontMatter {
     #[serde(default)]
     pub project: Option<ProjectStatus>,
+    /// 作業実体が別リポジトリにある PJ のみ指定する（例: `~/workspace/dicegame`）
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// `project: done` のときの完了日（`YYYY-MM-DD`）
+    #[serde(default)]
+    pub completed: Option<String>,
 }
 
 pub fn parse_front_matter(lines: &[String]) -> Option<FrontMatterParsed> {
@@ -574,15 +581,21 @@ pub fn parse_front_matter(lines: &[String]) -> Option<FrontMatterParsed> {
     let end = end?;
     let body = lines[1..end].join("\n");
     if body.trim().is_empty() {
-        return Some(FrontMatterParsed { project: None });
+        return Some(FrontMatterParsed::default());
     }
     let fm: FrontMatter = serde_yml::from_str(&body).ok()?;
-    Some(FrontMatterParsed { project: fm.project })
+    Some(FrontMatterParsed {
+        project: fm.project,
+        repo: fm.repo,
+        completed: fm.completed,
+    })
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct FrontMatterParsed {
     pub project: Option<ProjectStatus>,
+    pub repo: Option<String>,
+    pub completed: Option<String>,
 }
 
 // === Tag extraction ===
@@ -1562,6 +1575,37 @@ mod tests {
     fn test_parse_front_matter_invalid_yaml() {
         let l = lines(&["---", "project: [unclosed", "---"]);
         assert!(parse_front_matter(&l).is_none());
+    }
+
+    #[test]
+    fn test_parse_front_matter_repo() {
+        let l = lines(&["---", "project: active", "repo: ~/workspace/dicegame", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.repo.as_deref(), Some("~/workspace/dicegame"));
+    }
+
+    #[test]
+    fn test_parse_front_matter_completed_unquoted_date() {
+        // クォートなしの日付が String として読めること（実データはこの書き方）
+        let l = lines(&["---", "project: done", "completed: 2026-05-31", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.project, Some(ProjectStatus::Done));
+        assert_eq!(fm.completed.as_deref(), Some("2026-05-31"));
+    }
+
+    #[test]
+    fn test_parse_front_matter_repo_absent() {
+        let l = lines(&["---", "project: active", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.repo, None);
+        assert_eq!(fm.completed, None);
+    }
+
+    #[test]
+    fn test_parse_front_matter_unknown_field_ignored() {
+        let l = lines(&["---", "project: active", "future_field: 何か", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.project, Some(ProjectStatus::Active));
     }
 
     // --- extract_file_tags tests ---
