@@ -230,6 +230,60 @@ fn filter_tree_by_tag(
         .collect()
 }
 
+/// `list` の出力形式。
+///
+/// 0件のときも構造化出力なら空の配列を返せるよう、フォーマットの解釈を
+/// 集計より前に済ませておく。
+#[derive(Clone, Copy, PartialEq)]
+enum ListFormat {
+    Text,
+    Json,
+    Yaml,
+}
+
+fn parse_list_format(format: Option<&str>) -> Result<ListFormat, String> {
+    match format {
+        None => Ok(ListFormat::Text),
+        Some("json") => Ok(ListFormat::Json),
+        Some("yaml") => Ok(ListFormat::Yaml),
+        Some(other) => Err(other.to_string()),
+    }
+}
+
+/// 集計結果を出力する。
+///
+/// `json` / `yaml` は該当0件でも `[]` を返す。呼び出し側が必ずパースできるようにするためで、
+/// ここで日本語のメッセージを出すと `--tag` が0件のときだけパースが壊れる。
+fn print_tree(tree: &[TreeDateGroup], format: ListFormat, tag: Option<&str>) {
+    match format {
+        ListFormat::Json => {
+            let json = serde_json::to_string_pretty(tree).unwrap_or_else(|e| {
+                eprintln!("エラー: JSON変換に失敗しました: {e}");
+                process::exit(1);
+            });
+            println!("{json}");
+        }
+        ListFormat::Yaml => {
+            let yaml = serde_yaml::to_string(tree).unwrap_or_else(|e| {
+                eprintln!("エラー: YAML変換に失敗しました: {e}");
+                process::exit(1);
+            });
+            print!("{yaml}");
+        }
+        ListFormat::Text => {
+            if tree.is_empty() {
+                if tag.is_some() {
+                    println!("該当するタグのタスクが見つかりません");
+                } else {
+                    println!("未完了のタスクはありません");
+                }
+                return;
+            }
+            print_tree_text(tree);
+        }
+    }
+}
+
 fn list_tasks(format: Option<String>, tag: Option<String>) {
     let base_dir = taski_dir();
     if !base_dir.exists() {
@@ -237,9 +291,19 @@ fn list_tasks(format: Option<String>, tag: Option<String>) {
         process::exit(1);
     }
 
+    let list_format = parse_list_format(format.as_deref()).unwrap_or_else(|bad| {
+        eprintln!("エラー: 未対応のフォーマットです: {bad}");
+        process::exit(1);
+    });
+
     let md_files = collect_md_files(&base_dir);
     if md_files.is_empty() {
-        println!("タスクが見つかりません");
+        // ファイルが1つも無い場合も構造化出力なら空配列を返す
+        if list_format == ListFormat::Text {
+            println!("タスクが見つかりません");
+        } else {
+            print_tree(&[], list_format, tag.as_deref());
+        }
         return;
     }
 
@@ -281,40 +345,10 @@ fn list_tasks(format: Option<String>, tag: Option<String>) {
         tree
     };
 
-    if tree.is_empty() {
-        if tag.is_some() {
-            println!("該当するタグのタスクが見つかりません");
-        } else {
-            println!("未完了のタスクはありません");
-        }
-        return;
-    }
+    print_tree(&tree, list_format, tag.as_deref());
+}
 
-    if let Some(fmt) = format {
-        match fmt.as_str() {
-            "json" => {
-                let json = serde_json::to_string_pretty(&tree).unwrap_or_else(|e| {
-                    eprintln!("エラー: JSON変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                println!("{json}");
-                return;
-            }
-            "yaml" => {
-                let yaml = serde_yaml::to_string(&tree).unwrap_or_else(|e| {
-                    eprintln!("エラー: YAML変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                print!("{yaml}");
-                return;
-            }
-            _ => {
-                eprintln!("エラー: 未対応のフォーマットです: {fmt}");
-                process::exit(1);
-            }
-        }
-    }
-
+fn print_tree_text(tree: &[TreeDateGroup]) {
     for (i, date_group) in tree.iter().enumerate() {
         if i > 0 {
             println!();
