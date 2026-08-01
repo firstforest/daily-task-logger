@@ -223,7 +223,11 @@ fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
 /// 新しい日付から順に見て、全 PJ が見つかった時点で打ち切る。
 /// 基準日より後の journal（明日のタスクを先に書いた場合など）は見ない。
 /// 空白を含む PJ 名は `#タグ` で書けないので、実質 `[[名前]]` のみが効く。
-fn journal_last_mentions(base_dir: &Path, names: &[String], today: &str) -> HashMap<String, String> {
+fn journal_last_mentions(
+    base_dir: &Path,
+    names: &[String],
+    today: &str,
+) -> HashMap<String, String> {
     let mut result: HashMap<String, String> = HashMap::new();
     if names.is_empty() {
         return result;
@@ -416,6 +420,15 @@ fn commit_dates(path: &Path) -> Vec<String> {
 ///
 /// 基準日より後のコミットは数えない。`--today` に過去日を渡したときに
 /// 当時まだ存在しないコミットで「未反映」と言わないため。
+///
+/// ここには既定の `today`（実行環境のローカル日付）とのタイムゾーン差という穴がある。
+/// `%ad` は author date を **コミット自身のタイムゾーン** で描画するので、自分より東の
+/// タイムゾーン（UTC+13 など）や時計のずれた環境で作られたコミットは、ローカルの「今日」より
+/// 1日先の日付を持ちうる。それが除外されると `repo_last` が1つ古いコミットまで巻き戻り、
+/// 未反映の作業があるのに `unreported` が false に倒れる。以前は `repo_days: -1` として
+/// 見えていた分、誤りが可視から不可視に変わっている。個人の PJ ノート用途では
+/// 発生頻度が低いので許容しているが、他所からのコミットが混ざるリポジトリを
+/// 対象にするなら、基準日が既定のときだけ日数を 0 でクランプする等の対処が要る。
 fn repo_info(repo: &str, log_last: Option<&str>, today: &str) -> RepoInfo {
     let path = expand_home(repo);
     if !path.exists() {
