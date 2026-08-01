@@ -69,7 +69,7 @@ taski list --tag work --format json
 
 ファイル冒頭の YAML front matter に `project: active` を指定した場合、そのファイル名（`.md` 拡張子を除き、空白は `_` に置換）がタグとして全タスクに自動付与され、`--tag` フィルタの対象になる。`project: done`（完了済みプロジェクト）や `project: someday`（棚上げ）、未指定の場合は自動タグ付けされない。
 
-`--format json` / `--format yaml` は該当0件でも空の配列（`[]`）を返す（終了コードは 0）。`someday` / `done` の PJ 名でタグを引くと 0 件になるのは正常系なので、そのままパースしてよい。
+`--format json` / `--format yaml` は該当0件でも空の配列（`[]`）を返す（終了コードは 0）。`someday` / `done` の PJ 名でタグを引くと 0 件になるのは正常系なので、そのままパースしてよい。ただし `~/taski` 自体が無い場合は終了コード 1 で stderr にメッセージを出す（stdout は空）ので、パースの前に終了コードは見ること。
 
 **表示ルール:**
 - 今日の日付のタスクは完了・未完了の両方を表示
@@ -92,12 +92,13 @@ taski list --tag work --format json
         "fileUri": "/Users/user/taski/journal/2026/04/2026-04-11.md",
         "tasks": [
           {
-            "isCompleted": false,
+            "status": "incomplete",
             "text": "タスク名 #tag",
             "fileUri": "/Users/user/taski/journal/2026/04/2026-04-11.md",
             "line": 3,
             "log": "ログ内容",
-            "date": "2026-04-11"
+            "date": "2026-04-11",
+            "context": ["見出し"]
           }
         ]
       }
@@ -128,6 +129,8 @@ taski schedule --format yaml
 - `-f, --format <FORMAT>` — 出力フォーマット（`json` または `yaml`）
 - `-d, --date <DATE>` — 表示する日付（`YYYY-MM-DD` 形式、省略時は今日）
 
+`list` と同じく、`--format json` / `--format yaml` は該当0件でも空の配列（`[]`）を返す（終了コードは 0）。予定の無い日は正常系として普通に起きるので、そのままパースしてよい。
+
 **表示内容:**
 - 時刻付きタスク（`HH:MM` または `HH:MM-HH:MM`）は時刻順に表示
 - 時刻なしタスクは `--:--` として末尾に表示
@@ -141,7 +144,7 @@ taski schedule --format yaml
   {
     "taskText": "API設計レビュー",
     "taskLine": 3,
-    "isCompleted": false,
+    "status": "incomplete",
     "logText": "エンドポイント設計の確認",
     "logLine": 4,
     "time": "10:00",
@@ -152,6 +155,7 @@ taski schedule --format yaml
 ```
 
 - `taskText` — タスク名（ジャーナルメモの場合は空文字列）
+- `status` — `incomplete` / `completed` / `cancelled`
 - `time` — 開始時刻（時刻なしの場合は空文字列）
 - `endTime` — 終了時刻（範囲指定なしの場合は空文字列）
 - `logText` — ログ内容またはメモのテキスト
@@ -266,7 +270,7 @@ taski pj --no-fetch --format json
 taski pj --status active,someday
 taski pj --all
 
-# 基準日を指定（過去日を渡すとその日時点の状態を再現する）
+# 基準日を指定（基準日より後の日付を持つ情報を集計から除外する）
 taski pj --today 2026-07-25
 ```
 
@@ -274,7 +278,7 @@ taski pj --today 2026-07-25
 - `-f, --format <FORMAT>` — 出力フォーマット（`table` または `json`、既定は `table`）
 - `-s, --status <STATUS>` — カンマ区切りで status を絞る（`active` / `someday` / `done`、既定は `active`）
 - `--all` — status で絞らず全件表示（`done` を含む。`--status` とは排他）
-- `--today <DATE>` — 基準日（`YYYY-MM-DD`、省略時は今日）。経過日数の計算に使う
+- `--today <DATE>` — 基準日（`YYYY-MM-DD`、省略時は今日）。経過日数の計算と、後述の日付フィルタに使う
 - `--no-fetch` — `repo:` のリポジトリを `git fetch` しない
 
 **fetch について:**
@@ -285,7 +289,9 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
 
 **`--today` について:**
 
-基準日より後のログ・コミット・journal 言及は「その時点ではまだ無い」ものとして扱う。過去日を渡すとその日時点の状態が再現され、経過日数が負になることはない。
+基準日より後のログ・コミット・journal 言及・ノート更新は「その時点ではまだ無い」ものとして集計から除外する。`log_last` などは基準日以前の最新を採り、無ければ `null` になる。経過日数が負になることはない。先の日付を書いたログや翌日ぶんの journal も同じ扱いなので、基準日を省略した通常運用でも負にならない。
+
+**巻き戻るのは日付由来のフィールドだけ。** `log_last` / `repo_last` / `journal_last` / `updated` とそれぞれの日数、および `logs` が対象。`next_action` / `health` / `backlog` / `status` / `completed` は **ノートの現在の内容がそのまま出る**（過去のノート内容は git から復元しない）。過去日を渡しても「その日時点のスナップショット」にはならないので、`--status` の絞り込みも現在の `project:` の値で効く。
 
 **JSON出力の構造:**
 
@@ -384,7 +390,7 @@ taski memo MTGで決まったこと: デプロイは来週
 taski toggle ~/taski/journal/2026/04/2026-04-11.md 5
 
 # 他のツールと連携（JSON出力をjqで加工）
-taski list --format json | jq '.[].fileGroups[].tasks[] | select(.isCompleted == false) | .text'
+taski list --format json | jq -r '.[].fileGroups[].tasks[] | select(.status == "incomplete") | .text'
 
 # スケジュールの空き時間を確認
 taski schedule --format json | jq '[.[] | select(.time != "")] | sort_by(.time)'
