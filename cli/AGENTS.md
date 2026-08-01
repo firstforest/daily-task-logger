@@ -67,7 +67,9 @@ taski list --tag work --format json
 - `-f, --format <FORMAT>` — 出力フォーマット（`json` または `yaml`）
 - `-t, --tag <TAG>` — 指定タグを含むタスクのみ表示（`#` は不要、例: `--tag work`）
 
-ファイル冒頭の YAML front matter に `project: active` を指定した場合、そのファイル名（`.md` 拡張子を除き、空白は `_` に置換）がタグとして全タスクに自動付与され、`--tag` フィルタの対象になる。`project: done`（完了済みプロジェクト）や未指定の場合は自動タグ付けされない。
+ファイル冒頭の YAML front matter に `project: active` を指定した場合、そのファイル名（`.md` 拡張子を除き、空白は `_` に置換）がタグとして全タスクに自動付与され、`--tag` フィルタの対象になる。`project: done`（完了済みプロジェクト）や `project: someday`（棚上げ）、未指定の場合は自動タグ付けされない。
+
+`--format json` / `--format yaml` は該当0件でも空の配列（`[]`）を返す（終了コードは 0）。`someday` / `done` の PJ 名でタグを引くと 0 件になるのは正常系なので、そのままパースしてよい。
 
 **表示ルール:**
 - 今日の日付のタスクは完了・未完了の両方を表示
@@ -225,6 +227,135 @@ taski resolve foo --format json
 - `path` — ファイルの絶対パス
 - `created` — 新規作成した場合 `true`、既存ファイルの場合 `false`
 
+### `taski pj`
+
+PJ（プロジェクト）横断の状態を集約して表示する。`list` が日付軸なのに対し、こちらは PJ 軸。
+
+対象は `$HOME/taski/note/*.md` のうち、front matter に `project:` を持つノート。PJ ノートは次の 3 セクションからなる日報形式で書かれている。
+
+```markdown
+---
+project: active          # active / someday / done
+repo: ~/workspace/foo    # 任意。作業実体が別リポジトリにある場合のパス
+---
+# PJ名
+
+## 次の予定
+- [ ] 続きを実装する（30分・重・@PC）   # 唯一の Next Action。1行だけ
+
+## ログ
+- 2026-07-30: ここまでやった
+
+## オープンタスク
+- あとで考える                          # バックログ。チェックボックスは付けない
+```
+
+**このコマンドは判断をしない。** 機械的に決まる事実だけを出す。「このタスクは粒度が粗い」「これは着手すべき」といった判断は呼び出し側（skill やエージェント）が行う。
+
+```bash
+# 既定（table 形式、active な PJ のみ、repo を fetch してから読む）
+taski pj
+
+# JSON で取得（エージェントから使う場合はこちら）
+taski pj --format json
+
+# fetch を省略して即答（repo の日付はローカルの clone 基準になる）
+taski pj --no-fetch --format json
+
+# 棚上げ・完了も含めて見る
+taski pj --status active,someday
+taski pj --all
+
+# 基準日を指定（過去日を渡すとその日時点の状態を再現する）
+taski pj --today 2026-07-25
+```
+
+**オプション:**
+- `-f, --format <FORMAT>` — 出力フォーマット（`table` または `json`、既定は `table`）
+- `-s, --status <STATUS>` — カンマ区切りで status を絞る（`active` / `someday` / `done`、既定は `active`）
+- `--all` — status で絞らず全件表示（`done` を含む。`--status` とは排他）
+- `--today <DATE>` — 基準日（`YYYY-MM-DD`、省略時は今日）。経過日数の計算に使う
+- `--no-fetch` — `repo:` のリポジトリを `git fetch` しない
+
+**fetch について:**
+
+既定で `repo:` のリポジトリを `git fetch` してから読む。fetch しない限り「ローカルの clone が古い」ことは検出できない（remote-tracking ref 自体が古く、比較対象にならない）ため。fetch のみで `pull` はしないので、作業ツリーと HEAD は動かない。ネットワークを使うぶん遅くなるので、**即答性が要る用途（「次に何をやる？」に答えるなど）では `--no-fetch` を使う**。その場合 `repo_last` はローカルの clone 基準になる。
+
+fetch に失敗しても集計は続行し、失敗したリポジトリを `fetch_failed` に挙げる。ここに挙がった PJ の `repo_last` は信用できない。リモートを持たないローカル専用リポジトリは fetch をスキップする（失敗ではない）。
+
+**`--today` について:**
+
+基準日より後のログ・コミット・journal 言及は「その時点ではまだ無い」ものとして扱う。過去日を渡すとその日時点の状態が再現され、経過日数が負になることはない。
+
+**JSON出力の構造:**
+
+```json
+{
+  "generated": "2026-08-01",
+  "fetched": true,
+  "fetch_failed": [],
+  "projects": [
+    {
+      "name": "漫画制作エディタ",
+      "path": "note/漫画制作エディタ.md",
+      "status": "active",
+      "repo": "~/workspace/manga-editor",
+      "completed": null,
+      "next_action": "エクスポート処理を書く（45分・重・@PC）",
+      "next_action_body": "エクスポート処理を書く",
+      "next_action_meta": "45分・重・@PC",
+      "next_action_ai": false,
+      "health": "ok",
+      "updated": "2026-07-30",
+      "stale_days": 2,
+      "log_last": "2026-07-28",
+      "log_days": 4,
+      "repo_last": "2026-07-31",
+      "repo_days": 1,
+      "unreported": true,
+      "unreported_count": 3,
+      "journal_last": "2026-07-29",
+      "journal_days": 3,
+      "backlog_count": 2,
+      "backlog": ["ページ管理を整理する", "書き出し設定を保存する"],
+      "logs": [
+        { "date": "2026-07-28", "text": "コマ割りの実装" }
+      ]
+    }
+  ]
+}
+```
+
+トップレベル:
+- `generated` — 基準日（`--today` の値、省略時は今日）
+- `fetched` — `repo:` を fetch したか。`false` のとき `repo_last` は古い可能性がある
+- `fetch_failed` — fetch に失敗したリポジトリのパス
+- `projects` — PJ の配列（該当0件でも空配列を返す）
+
+`projects[]` の各フィールド:
+- `name` — PJ 名（ノートのファイル名から拡張子を除いたもの）
+- `path` — `$HOME/taski` からの相対パス
+- `status` — `active` / `someday` / `done`
+- `repo` — front matter の `repo:`（未設定なら `null`）
+- `completed` — 完了日（`done` のときのみ。未設定なら `null`）
+- `next_action` — `## 次の予定` の最初の `- [ ]` 行（メタデータ込みの原文）
+- `next_action_body` / `next_action_meta` — 本文と判断メタデータ（`45分・重・@PC`）に分離したもの
+- `next_action_ai` — 判断メタデータのコンテキストが `@AI` か
+- `health` — `ok` / `unclarified`（判断メタデータが無い）/ `no-next`（`- [ ]` が無い）
+- `updated` / `stale_days` — PJ ノート自体の最終更新日（git 基準）と経過日数
+- `log_last` / `log_days` — `## ログ` の最新日付と経過日数
+- `repo_last` / `repo_days` — `repo:` のリポジトリの最終コミット日と経過日数
+- `unreported` / `unreported_count` — `repo_last > log_last` のとき `true`。作業は進んでいるのにログに反映されていない状態と、その未反映コミット数
+- `journal_last` / `journal_days` — journal で `[[PJ名]]` / `#PJ名` により最後に言及された日と経過日数
+- `backlog_count` / `backlog` — `## オープンタスク` の項目
+- `logs` — 直近のログ（最大3件、新しい順）。再開時のコンテキストとして使う
+
+日付が取れない場合（ログが1件も無い、`repo:` のパスが存在しない等）は該当フィールドが `null` になる。停滞（`stale_days` / `log_days`）と言及（`journal_days`）は別々に持つ。合成すると「候補に載っただけで停滞0日」になり実態が見えなくなるため。
+
+**table の並び順:**
+
+手を入れる必要が高い順（未反映 → ログが古い/無い → `no-next` → `unclarified`）。未反映の PJ は行頭に `!` が付く。
+
 ## 終了コード
 
 - `0` — 成功
@@ -241,6 +372,10 @@ taski list
 
 # 特定プロジェクトのタスクだけ確認
 taski list --tag myproject
+
+# PJ 横断の状態を確認（即答が要るときは --no-fetch）
+taski pj
+taski pj --no-fetch --format json | jq -r '.projects[] | select(.unreported) | .name'
 
 # メモを追記
 taski memo MTGで決まったこと: デプロイは来週
