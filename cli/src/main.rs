@@ -100,6 +100,10 @@ enum Commands {
         /// 基準日（YYYY-MM-DD、省略時は今日）。停滞日数の計算に使う
         #[arg(long)]
         today: Option<String>,
+
+        /// repo: のリポジトリを fetch しない（速いが repo の日付が古い可能性がある）
+        #[arg(long)]
+        no_fetch: bool,
     },
 }
 
@@ -687,8 +691,9 @@ fn main() {
             status,
             all,
             today,
+            no_fetch,
         } => {
-            pj::run(taski_dir(), format, status, all, today);
+            pj::run(taski_dir(), format, status, all, today, no_fetch);
         }
     }
 }

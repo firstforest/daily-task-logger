@@ -53,6 +53,10 @@ pub struct PjProject {
 #[derive(Serialize, Debug)]
 pub struct PjOutput {
     pub generated: String,
+    /// `repo:` のリポジトリを fetch したか。false のとき `repo_last` は古い可能性がある
+    pub fetched: bool,
+    /// fetch に失敗したリポジトリ。ここに挙がった PJ の `repo_last` は信用できない
+    pub fetch_failed: Vec<String>,
     pub projects: Vec<PjProject>,
 }
 
@@ -246,6 +250,71 @@ fn is_unreported(repo_last: Option<&str>, log_last: Option<&str>) -> bool {
     }
 }
 
+/// 同時に走らせる `git fetch` の本数。
+const FETCH_PARALLELISM: usize = 8;
+
+/// `repo:` のリポジトリを fetch する。失敗したリポジトリのパスを返す。
+///
+/// fetch しない限り「ローカルの clone が古い」ことは検出できない
+/// （remote-tracking ref 自体が古いので比較対象にならない）ため、既定で叩く。
+/// PJ 数だけネットワークを使うので並列に流し、失敗しても集計は続行する。
+fn fetch_repos(repos: &[PathBuf]) -> Vec<PathBuf> {
+    if repos.is_empty() {
+        return Vec::new();
+    }
+
+    let failed = std::sync::Mutex::new(Vec::new());
+    let groups = FETCH_PARALLELISM.min(repos.len());
+
+    std::thread::scope(|scope| {
+        for offset in 0..groups {
+            let failed = &failed;
+            scope.spawn(move || {
+                let mut local = Vec::new();
+                for repo in repos.iter().skip(offset).step_by(groups) {
+                    if !fetch_repo(repo) {
+                        local.push(repo.clone());
+                    }
+                }
+                if !local.is_empty() {
+                    failed.lock().unwrap().extend(local);
+                }
+            });
+        }
+    });
+
+    let mut failed = failed.into_inner().unwrap_or_default();
+    failed.sort();
+    failed
+}
+
+/// 1リポジトリを fetch する。リモートを持たないローカル専用リポジトリは成功扱い。
+///
+/// 認証待ちで固まらないよう対話プロンプトを潰し、遅い接続で止まらないよう
+/// HTTP の低速打ち切りを入れる。
+fn fetch_repo(repo: &Path) -> bool {
+    let has_remote = git_output(repo, &["remote"])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false);
+    if !has_remote {
+        return true;
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(repo)
+        .args(["fetch", "--quiet"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
+        .env("GIT_HTTP_LOW_SPEED_TIME", "20");
+    // 利用者が独自の GIT_SSH_COMMAND を持っている場合は壊さない
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+    }
+
+    cmd.output().map(|out| out.status.success()).unwrap_or(false)
+}
+
 struct RepoInfo {
     last: Option<String>,
     unreported_count: usize,
@@ -345,7 +414,18 @@ fn sort_key(p: &PjProject) -> (u8, i64, u8, String) {
 }
 
 /// PJ を集める。git・journal の走査を含む。
-fn collect_projects(base_dir: &Path, statuses: &[ProjectStatus], today: &str) -> Vec<PjProject> {
+/// 集計結果と、その過程で fetch に失敗したリポジトリ。
+struct Collected {
+    projects: Vec<PjProject>,
+    fetch_failed: Vec<String>,
+}
+
+fn collect_projects(
+    base_dir: &Path,
+    statuses: &[ProjectStatus],
+    today: &str,
+    fetch: bool,
+) -> Collected {
     let note_dir = base_dir.join("note");
     let updated_map = note_last_updated(base_dir);
 
@@ -396,6 +476,25 @@ fn collect_projects(base_dir: &Path, statuses: &[ProjectStatus], today: &str) ->
 
     let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
     let mentions = journal_last_mentions(base_dir, &names);
+
+    // 1つのリポジトリを複数 PJ が共有することがあるので重複を潰してから fetch する
+    let fetch_failed: Vec<String> = if fetch {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for p in &pending {
+            if let Some(repo) = p.repo.as_deref() {
+                let path = expand_home(repo);
+                if path.exists() && !seen.contains(&path) {
+                    seen.push(path);
+                }
+            }
+        }
+        fetch_repos(&seen)
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut projects: Vec<PjProject> = pending
         .into_iter()
@@ -449,7 +548,10 @@ fn collect_projects(base_dir: &Path, statuses: &[ProjectStatus], today: &str) ->
         .collect();
 
     projects.sort_by_key(sort_key);
-    projects
+    Collected {
+        projects,
+        fetch_failed,
+    }
 }
 
 // === 表示 ===
@@ -506,7 +608,7 @@ fn health_label(health: PjHealth) -> &'static str {
     }
 }
 
-fn print_table(projects: &[PjProject], today: &str) {
+fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed: &[String]) {
     println!(
         "\x1b[1mPJ状態  {}  ({}件)\x1b[0m",
         today,
@@ -625,6 +727,15 @@ fn print_table(projects: &[PjProject], today: &str) {
     println!(
         "\x1b[2m  ! = 未反映（repo にコミットがあるのに PJノートのログに無い）\x1b[0m"
     );
+
+    if !fetched {
+        println!(
+            "\x1b[2m  fetch していないため repo はローカルの clone 基準（古い可能性あり）\x1b[0m"
+        );
+    }
+    for repo in fetch_failed {
+        println!("\x1b[33m  警告: fetch できませんでした: {repo}\x1b[0m");
+    }
 }
 
 /// `taski pj` の本体。
@@ -634,6 +745,7 @@ pub fn run(
     status: Option<String>,
     all: bool,
     today: Option<String>,
+    no_fetch: bool,
 ) {
     if !base_dir.exists() {
         eprintln!("エラー: {} が見つかりません", base_dir.display());
@@ -666,31 +778,41 @@ pub fn run(
         }
     };
 
-    let projects = collect_projects(&base_dir, &statuses, &today);
-
-    match format.as_deref() {
-        Some("json") => {
-            let output = PjOutput {
-                generated: today,
-                projects,
-            };
-            let json = serde_json::to_string_pretty(&output).unwrap_or_else(|e| {
-                eprintln!("エラー: JSON変換に失敗しました: {e}");
-                process::exit(1);
-            });
-            println!("{json}");
-        }
-        Some("table") | None => {
-            if projects.is_empty() {
-                println!("該当する PJ がありません");
-                return;
-            }
-            print_table(&projects, &today);
-        }
+    // fetch でネットワークを使う前に引数を検証しておく
+    let as_json = match format.as_deref() {
+        Some("json") => true,
+        Some("table") | None => false,
         Some(other) => {
             eprintln!("エラー: 未対応のフォーマットです: {other}");
             process::exit(1);
         }
+    };
+
+    let collected = collect_projects(&base_dir, &statuses, &today, !no_fetch);
+
+    if as_json {
+        let output = PjOutput {
+            generated: today,
+            fetched: !no_fetch,
+            fetch_failed: collected.fetch_failed,
+            projects: collected.projects,
+        };
+        let json = serde_json::to_string_pretty(&output).unwrap_or_else(|e| {
+            eprintln!("エラー: JSON変換に失敗しました: {e}");
+            process::exit(1);
+        });
+        println!("{json}");
+    } else {
+        if collected.projects.is_empty() {
+            println!("該当する PJ がありません");
+            return;
+        }
+        print_table(
+            &collected.projects,
+            &today,
+            !no_fetch,
+            &collected.fetch_failed,
+        );
     }
 }
 

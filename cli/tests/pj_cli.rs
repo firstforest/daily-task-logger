@@ -342,6 +342,97 @@ fn test_table_output_marks_unreported() {
 }
 
 #[test]
+fn test_fetch_is_on_by_default_and_skips_repos_without_remote() {
+    let home = TempHome::new("fetch-default");
+    let root = home.path();
+    let repo = make_repo(root, "repo-local-only", &["2026-07-26"]);
+
+    write_note(
+        root,
+        "ローカル専用PJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# ローカル専用PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+            repo.display()
+        ),
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    assert_eq!(json["fetched"], true);
+    // リモートを持たないリポジトリは fetch をスキップするので失敗にはならない
+    assert_eq!(json["fetch_failed"].as_array().unwrap().len(), 0);
+    assert_eq!(find(&json, "ローカル専用PJ")["repo_last"], "2026-07-26");
+}
+
+#[test]
+fn test_no_fetch_flag() {
+    let home = TempHome::new("no-fetch");
+    let root = home.path();
+    let repo = make_repo(root, "repo-y", &["2026-07-26"]);
+
+    write_note(
+        root,
+        "PJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+            repo.display()
+        ),
+    );
+
+    let json = run_pj(root, &["--format", "json", "--no-fetch", "--today", "2026-08-01"]);
+    assert_eq!(json["fetched"], false);
+    assert_eq!(find(&json, "PJ")["repo_last"], "2026-07-26");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_taski"))
+        .env("HOME", root)
+        .args(["pj", "--no-fetch", "--today", "2026-08-01"])
+        .output()
+        .expect("taski を実行できません");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("fetch していないため"),
+        "fetch していない旨の注記が無い:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_fetch_failure_is_reported_but_does_not_abort() {
+    let home = TempHome::new("fetch-fail");
+    let root = home.path();
+    let repo = make_repo(root, "repo-bad-remote", &["2026-07-26"]);
+    // 存在しないローカルパスを remote にすると、ネットワークを使わずに fetch が失敗する
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &root.join("does-not-exist.git").to_string_lossy(),
+        ],
+        None,
+    );
+
+    write_note(
+        root,
+        "壊れたremotePJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# 壊れたremotePJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-07-01: 着手した\n",
+            repo.display()
+        ),
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    assert_eq!(json["fetched"], true);
+    let failed = json["fetch_failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "fetch 失敗が報告されていない: {failed:?}");
+    assert!(failed[0].as_str().unwrap().ends_with("repo-bad-remote"));
+
+    // fetch が失敗しても集計そのものは続行する
+    let p = find(&json, "壊れたremotePJ");
+    assert_eq!(p["repo_last"], "2026-07-26");
+    assert_eq!(p["unreported"], true);
+}
+
+#[test]
 fn test_invalid_status_and_format_fail() {
     let home = TempHome::new("invalid");
     let root = home.path();
