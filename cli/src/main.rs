@@ -85,8 +85,8 @@ enum Commands {
     },
     /// PJ 横断の状態を表示
     Pj {
-        /// 出力フォーマット（table, json）
-        #[arg(long, short, default_value = "table")]
+        /// 出力フォーマット（table, json。省略時は table）
+        #[arg(long, short)]
         format: Option<String>,
 
         /// カンマ区切りで status を絞る（active, someday, done）
@@ -94,7 +94,7 @@ enum Commands {
         status: Option<String>,
 
         /// status で絞らず全件表示（done を含む）
-        #[arg(long)]
+        #[arg(long, conflicts_with = "status")]
         all: bool,
 
         /// 基準日（YYYY-MM-DD、省略時は今日）。停滞日数の計算に使う

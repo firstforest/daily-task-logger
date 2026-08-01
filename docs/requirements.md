@@ -141,7 +141,7 @@
   - `schedule` — 今日のスケジュールを表示。`--format json|yaml`、`--date YYYY-MM-DD` で日付指定。
   - `agents-md` — 同梱の AGENTS.md 内容を出力。`--output <path>` でファイル書き出し。
   - `resolve <name>` — `[[name]]` の対応ファイルパスを出力。無ければ作成（日付なら journal 配下、それ以外は `$HOME/taski/note/<name>.md`）。`--no-create` で作成抑止、`--format json` で構造化出力。
-  - `pj` — PJ 横断の状態を表示（`list` が日付軸なのに対し PJ 軸）。`--format table|json`（既定 `table`）、`--status active,someday`（既定 `active`）、`--all` で `done` を含む全件、`--today YYYY-MM-DD` で基準日を指定、`--no-fetch` で `repo:` の fetch を省略。詳細は [6.1](#61-pj-サブコマンド)。
+  - `pj` — PJ 横断の状態を表示（`list` が日付軸なのに対し PJ 軸）。`--format table|json`（既定 `table`）、`--status active,someday`（既定 `active`）、`--all` で `done` を含む全件（`--status` とは排他）、`--today YYYY-MM-DD` で基準日を指定、`--no-fetch` で `repo:` の fetch を省略。詳細は [6.1](#61-pj-サブコマンド)。
 
 ### 6.1 `pj` サブコマンド
 
@@ -152,6 +152,7 @@
 | 指標 | 定義 |
 | --- | --- |
 | `next_action` | `## 次の予定` の最初の `- [ ]` 行。`next_action_body` / `next_action_meta` に分離して返す |
+| `next_action_ai` | 判断メタデータのコンテキストに `@AI` を含むか |
 | `health` | `no-next`（`- [ ]` が無い）/ `unclarified`（判断メタデータが無い）/ `ok` |
 | `updated`・`stale_days` | PJ ノート自体の最終更新日（git 基準）と経過日数 |
 | `log_last`・`log_days` | `## ログ` の最新日付と経過日数 |
@@ -161,10 +162,14 @@
 | `backlog_count`・`backlog` | `## オープンタスク` の項目 |
 
 - 停滞（`stale_days` / `log_days`）と言及（`journal_days`）は分けて保持する。合成すると「候補に載っただけで停滞 0 日」になり実態が見えなくなる。
-- `unreported` の判定は厳密大なりなので、`log_last` 当日のコミットは反映済みと見なす。件数を数えるクエリも当日を除外し（`--after="<log_last> 23:59:59"`）、フラグと件数を食い違わせないこと。
+- `unreported` の判定は厳密大なりなので、`log_last` 当日のコミットは反映済みと見なす。`unreported_count` も同じ比較で数え、フラグと件数を食い違わせないこと。
+  - **フラグと件数は同一のクエリ結果から作る。** 件数だけ git 側（`--after`）に数えさせてはならない。日付の基準が食い違うため: `%ad` は author date をコミット自身のタイムゾーンで描画するのに対し、`--after` は committer date を実行環境のローカルタイムゾーンで解釈する。同じデータでも `TZ` によって件数が変わる。
+  - `repo_last` も `git log -1` では取らない。`-1` は commit date 順の先頭 1 件から author date を出すので、rebase / cherry-pick で両者がずれると他のコミットより古い日付を返す。取得した日付の最大値を採る。
+  - `## ログ` が 1 件も無い PJ は `log_last` が `null` なので、リポジトリの全コミットを未反映として数える（`unreported` が true であることと整合させる）。
 - リポジトリの走査は HEAD ではなく `--branches --remotes` を対象とする（未マージの作業ブランチを取りこぼさないため）。`--all` は使わない（jj の `refs/jj/keep/*` を拾って件数が膨らむ）。リポジトリが存在しない・git でない場合は `null` を返して続行する。
+- PJ ノートの最終更新日（`updated`）を git から取る際は `--relative` を付ける。付けないとパスがリポジトリルート相対で出るため、taski ディレクトリがリポジトリ直下でない配置（dotfiles リポジトリ配下など）で `note/*.md` と突き合わせられず、黙って `null` になる。
 - `repo:` のリポジトリは既定で `git fetch` してから読む。fetch しない限り「ローカルの clone が古い」ことは検出できない（remote-tracking ref 自体が古く、比較対象にならない）ため、既定を fetch ありとする。
-  - fetch は並列に流す。認証待ちで固まらないよう対話プロンプトを無効化し（`GIT_TERMINAL_PROMPT=0` / ssh は `BatchMode=yes`）、遅い接続で止まらないよう HTTP の低速打ち切りを入れる。利用者が `GIT_SSH_COMMAND` を設定している場合は上書きしない。
+  - fetch は並列に流す。認証待ちで固まらないよう対話プロンプトを無効化し（`GIT_TERMINAL_PROMPT=0` / ssh は `BatchMode=yes`）、遅い接続や到達不能なホストで止まらないよう HTTP の低速打ち切りと SSH の接続タイムアウト（`ConnectTimeout`）を入れる。利用者が `GIT_SSH_COMMAND` を設定している場合は上書きしない。
   - リモートを持たないローカル専用リポジトリは fetch をスキップする。fetch に失敗しても集計は続行し、失敗したリポジトリを報告する（`fetch_failed`。table では警告行）。
   - `--no-fetch` で省略できる。即答性が要る用途（`next-action` 等）はこちらを使う。その場合 `repo` の日付はローカルの clone 基準になる。
 - `table` の並び順は手を入れる必要が高い順（未反映 → ログが古い/無い → `no-next` → `unclarified`）。日本語の桁揃えには東アジア文字幅を用いる。

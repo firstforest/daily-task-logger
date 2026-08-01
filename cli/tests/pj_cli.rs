@@ -36,6 +36,12 @@ impl Drop for TempHome {
 }
 
 fn git(repo: &Path, args: &[&str], date: Option<&str>) {
+    git_dates(repo, args, date, date);
+}
+
+/// author date と committer date を別々に指定して git を叩く。
+/// 両者がずれるのは rebase / cherry-pick / `--amend` の後で、実運用では珍しくない。
+fn git_dates(repo: &Path, args: &[&str], author: Option<&str>, committer: Option<&str>) {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(repo)
@@ -48,8 +54,10 @@ fn git(repo: &Path, args: &[&str], date: Option<&str>) {
             "commit.gpgsign=false",
         ])
         .args(args);
-    if let Some(date) = date {
+    if let Some(date) = author {
         cmd.env("GIT_AUTHOR_DATE", date);
+    }
+    if let Some(date) = committer {
         cmd.env("GIT_COMMITTER_DATE", date);
     }
     let out = cmd.output().expect("git を実行できません");
@@ -60,21 +68,33 @@ fn git(repo: &Path, args: &[&str], date: Option<&str>) {
     );
 }
 
-/// 1コミットだけ持つリポジトリを作る。
+/// 指定した日付ぶんのコミットを持つリポジトリを作る。時刻は日本時間の正午。
 fn make_repo(root: &Path, name: &str, dates: &[&str]) -> PathBuf {
+    let stamps: Vec<String> = dates.iter().map(|d| format!("{d}T12:00:00+09:00")).collect();
+    let refs: Vec<&str> = stamps.iter().map(|s| s.as_str()).collect();
+    make_repo_at(root, name, &refs)
+}
+
+/// タイムスタンプ（オフセット込み）をそのまま指定してリポジトリを作る。
+fn make_repo_at(root: &Path, name: &str, stamps: &[&str]) -> PathBuf {
     let repo = root.join(name);
     fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init"], None);
-    for (i, date) in dates.iter().enumerate() {
-        fs::write(repo.join(format!("f{i}.txt")), format!("{i}")).unwrap();
-        git(&repo, &["add", "."], None);
-        git(
-            &repo,
-            &["commit", "-m", &format!("commit {i}")],
-            Some(&format!("{date}T12:00:00+09:00")),
-        );
+    for (i, stamp) in stamps.iter().enumerate() {
+        commit_file(&repo, i, Some(stamp), Some(stamp));
     }
     repo
+}
+
+fn commit_file(repo: &Path, i: usize, author: Option<&str>, committer: Option<&str>) {
+    fs::write(repo.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+    git(repo, &["add", "."], None);
+    git_dates(
+        repo,
+        &["commit", "-m", &format!("commit {i}")],
+        author,
+        committer,
+    );
 }
 
 fn write_note(home: &Path, name: &str, body: &str) {
@@ -85,12 +105,17 @@ fn write_note(home: &Path, name: &str, body: &str) {
 
 /// `taski pj --format json` を実行して JSON を返す。
 fn run_pj(home: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_taski"))
-        .env("HOME", home)
-        .arg("pj")
-        .args(args)
-        .output()
-        .expect("taski を実行できません");
+    run_pj_tz(home, None, args)
+}
+
+/// タイムゾーンを指定して `taski pj --format json` を実行する。
+fn run_pj_tz(home: &Path, tz: Option<&str>, args: &[&str]) -> serde_json::Value {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_taski"));
+    cmd.env("HOME", home).arg("pj").args(args);
+    if let Some(tz) = tz {
+        cmd.env("TZ", tz);
+    }
+    let out = cmd.output().expect("taski を実行できません");
     assert!(
         out.status.success(),
         "taski pj が失敗しました: {}",
@@ -151,6 +176,118 @@ fn test_unreported_detection_end_to_end() {
     assert_eq!(same["unreported"], false);
     // フラグが false のとき件数も必ず 0（`--since` を使うとここが 1 になって食い違う）
     assert_eq!(same["unreported_count"], 0);
+}
+
+#[test]
+fn test_unreported_count_is_timezone_independent() {
+    let home = TempHome::new("tz");
+    let root = home.path();
+
+    // 日本時間の 07-27 00:30 = UTC の 07-26 15:30。ログは 07-26 なので
+    // 「repo_last(07-27) > log_last(07-26) で1件未反映」が TZ によらず正しい答え。
+    // 件数を git の `--after`（committer date をローカル TZ で解釈）に数えさせると、
+    // TZ=UTC では 0 件になってフラグと食い違う。
+    let repo = make_repo_at(
+        root,
+        "repo-tz",
+        &["2026-07-20T12:00:00+09:00", "2026-07-27T00:30:00+09:00"],
+    );
+
+    write_note(
+        root,
+        "TZ検証PJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# TZ検証PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-07-26: ここまで\n",
+            repo.display()
+        ),
+    );
+
+    for tz in ["UTC", "Asia/Tokyo", "America/Los_Angeles"] {
+        let json = run_pj_tz(root, Some(tz), &["--format", "json", "--today", "2026-08-01"]);
+        let p = find(&json, "TZ検証PJ");
+        assert_eq!(p["repo_last"], "2026-07-27", "TZ={tz}");
+        assert_eq!(p["unreported"], true, "TZ={tz}");
+        assert_eq!(p["unreported_count"], 1, "TZ={tz} で件数が食い違う");
+    }
+}
+
+#[test]
+fn test_repo_last_uses_newest_date_after_rebase() {
+    let home = TempHome::new("rebase");
+    let root = home.path();
+
+    // rebase / cherry-pick 相当: author date は古いまま committer date だけ新しい。
+    // `git log -1` は committer date 順の先頭を取るので、そこから author date を
+    // 出すと 07-10 になり、より新しい 07-25 のコミットを取りこぼす。
+    let repo = root.join("repo-rebased");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init"], None);
+    commit_file(&repo, 0, Some("2026-07-25T12:00:00+09:00"), Some("2026-07-25T12:00:00+09:00"));
+    commit_file(&repo, 1, Some("2026-07-10T12:00:00+09:00"), Some("2026-07-30T12:00:00+09:00"));
+
+    write_note(
+        root,
+        "rebase済みPJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# rebase済みPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-07-20: ここまで\n",
+            repo.display()
+        ),
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "rebase済みPJ");
+    assert_eq!(p["repo_last"], "2026-07-25", "最新の日付を採るべき");
+    assert_eq!(p["unreported"], true);
+    // 07-20 より後は 07-25 の1件だけ（07-10 は含めない）
+    assert_eq!(p["unreported_count"], 1);
+}
+
+#[test]
+fn test_unreported_count_without_log_is_all_commits() {
+    let home = TempHome::new("no-log");
+    let root = home.path();
+
+    let repo = make_repo(root, "repo-no-log", &["2026-07-20", "2026-07-25", "2026-07-26"]);
+
+    write_note(
+        root,
+        "ログなしPJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# ログなしPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+            repo.display()
+        ),
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "ログなしPJ");
+    assert_eq!(p["log_last"], serde_json::Value::Null);
+    // ログが1件も無いので全コミットが未反映。フラグと件数の整合を保つ
+    assert_eq!(p["unreported"], true);
+    assert_eq!(p["unreported_count"], 3);
+}
+
+#[test]
+fn test_note_updated_when_taski_is_not_repo_root() {
+    let home = TempHome::new("subdir");
+    let root = home.path();
+
+    write_note(
+        root,
+        "サブディレクトリPJ",
+        "---\nproject: active\n---\n# サブディレクトリPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    // `~/taski` がリポジトリ直下ではなく、その1つ上がリポジトリルートのケース
+    // （dotfiles リポジトリ配下など）。`git log --name-only` は `--relative` が無いと
+    // リポジトリルート相対のパスを出すため、note/*.md と突き合わせられなくなる。
+    git(root, &["init"], None);
+    git(root, &["add", "."], None);
+    git(root, &["commit", "-m", "初回"], Some("2026-07-30T12:00:00+09:00"));
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "サブディレクトリPJ");
+    assert_eq!(p["updated"], "2026-07-30");
+    assert_eq!(p["stale_days"], 2);
 }
 
 #[test]

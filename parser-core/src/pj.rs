@@ -17,6 +17,7 @@
 //! これにより `taski list`（日付軸）に流れ込む PJ タスクが active PJ あたり最大1つに絞られる。
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::Serialize;
@@ -72,30 +73,55 @@ impl PjNote {
     }
 }
 
-fn heading_re() -> Regex {
-    Regex::new(r"^(#{1,6})\s+(.*)").unwrap()
+// 正規表現は行ごと・メタデータ要素ごとに引かれるので、初回だけコンパイルして使い回す。
+
+fn heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.*)").unwrap())
 }
 
-fn fence_re() -> Regex {
-    Regex::new(r"^\s*(```|~~~)").unwrap()
+fn fence_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\s*(```|~~~)").unwrap())
 }
 
 /// タスク行（`- [ ]` / `- [x]` / `- [-]`）。`- [[ノート名]]` は `[` の次が `[` なので一致しない。
-fn task_re() -> Regex {
-    Regex::new(r"^\s*-\s*\[([ x-])\]\s*(.*)").unwrap()
+fn task_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\s*-\s*\[([ x-])\]\s*(.*)").unwrap())
 }
 
 /// ログ行（`- YYYY-MM-DD: 内容`）。時刻・時間範囲付きも許容する。
-fn log_re() -> Regex {
-    Regex::new(
-        r"^\s*-\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:\s*(.*)",
-    )
-    .unwrap()
+fn log_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\s*-\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:\s*(.*)")
+            .unwrap()
+    })
 }
 
 /// 箇条書き行（`- 内容`）。
-fn bullet_re() -> Regex {
-    Regex::new(r"^\s*-\s+(.*)").unwrap()
+fn bullet_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\s*-\s+(.*)").unwrap())
+}
+
+/// 行末の括弧（`（45分・重・@PC）`）。
+fn trailing_paren_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(.*)[（(]([^（）()]{1,60})[）)]\s*$").unwrap())
+}
+
+/// 所要時間（`45分` / `2時間`）。
+fn duration_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\d+\s*(分|時間)$").unwrap())
+}
+
+/// 締切（`08-15` / `締切08-15`）。
+fn deadline_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(締切)?\d{1,2}-\d{1,2}$").unwrap())
 }
 
 /// `##` 見出しでセクションに切り分ける。
@@ -160,13 +186,11 @@ fn without_code_blocks(lines: &[String]) -> Vec<&String> {
 /// - コンテキスト: `@PC` / `@AI` / `@家` など
 /// - 締切: `08-15` / `締切08-15`
 fn is_meta_element(element: &str) -> bool {
-    let duration = Regex::new(r"^\d+\s*(分|時間)$").unwrap();
-    let weight = Regex::new(r"^[軽重]$").unwrap();
-    let context = Regex::new(r"^@.+$").unwrap();
-    let deadline = Regex::new(r"^(締切)?\d{1,2}-\d{1,2}$").unwrap();
-
     let e = element.trim();
-    duration.is_match(e) || weight.is_match(e) || context.is_match(e) || deadline.is_match(e)
+    // 重さ（`軽` / `重`）とコンテキスト（`@...`）は正規表現を使うまでもない
+    let weight = e == "軽" || e == "重";
+    let context = e.starts_with('@') && e.chars().count() > 1;
+    weight || context || duration_re().is_match(e) || deadline_re().is_match(e)
 }
 
 /// 行末の `（45分・重・@PC）` を判断メタデータとして本文から分離する。
@@ -175,8 +199,7 @@ fn is_meta_element(element: &str) -> bool {
 /// 誤検出しないよう、括弧の中身を `・,、` で分割していずれかの要素が
 /// メタデータの書式に一致することを条件にする。
 pub fn split_decision_meta(text: &str) -> Option<(String, String)> {
-    let re = Regex::new(r"^(.*)[（(]([^（）()]{1,60})[）)]\s*$").unwrap();
-    let caps = re.captures(text)?;
+    let caps = trailing_paren_re().captures(text)?;
     let body = caps[1].trim_end().to_string();
     let meta = caps[2].to_string();
 

@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
 use parser_core::pj::{parse_pj_note, PjHealth, PjLogEntry};
@@ -103,12 +105,16 @@ fn days_between(from: &str, to: &str) -> Option<i64> {
 
 /// `~/...` をホームディレクトリに展開する。
 fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    expand_home_with(path, home.as_deref())
+}
+
+/// `expand_home` の本体。HOME を引数で受け取るのでテストからプロセス環境を触らずに済む。
+fn expand_home_with(path: &str, home: Option<&Path>) -> PathBuf {
+    match (path.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(path),
     }
-    PathBuf::from(path)
 }
 
 /// `git log --name-only --format=%x00%ad` の出力から、パス → 最終更新日を作る。
@@ -138,6 +144,8 @@ fn parse_git_name_only(output: &str) -> HashMap<String, String> {
 /// note/ 配下の各ファイルの最終更新日を git から1回でまとめて取る。
 ///
 /// `-c core.quotepath=false` が無いと日本語ファイル名が8進エスケープされて一致しない。
+/// `--relative` が無いとパスがリポジトリルート相対で出るため、taski ディレクトリが
+/// リポジトリ直下でない場合（dotfiles リポジトリ配下など）に `note/*.md` と一致しなくなる。
 fn note_last_updated(base_dir: &Path) -> HashMap<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -147,6 +155,7 @@ fn note_last_updated(base_dir: &Path) -> HashMap<String, String> {
             "core.quotepath=false",
             "log",
             "--name-only",
+            "--relative",
             "--format=%x00%ad",
             "--date=short",
             "--",
@@ -240,7 +249,7 @@ fn journal_last_mentions(base_dir: &Path, names: &[String]) -> HashMap<String, S
 /// 未反映かどうか。`repo_last > log_last` のときだけ true。
 ///
 /// 判定が厳密大なりである以上、`log_last` 当日のコミットは「反映済み」と見なす。
-/// 件数を数えるクエリ側も当日を除外しないとフラグと食い違う（`repo_info` を参照）。
+/// 件数側も同じ比較で数えないとフラグと食い違う（`repo_info` を参照）。
 /// ログが1件も無い PJ は、コミットがある時点で未反映とする。
 fn is_unreported(repo_last: Option<&str>, log_last: Option<&str>) -> bool {
     match (repo_last, log_last) {
@@ -263,35 +272,49 @@ fn fetch_repos(repos: &[PathBuf]) -> Vec<PathBuf> {
         return Vec::new();
     }
 
-    let failed = std::sync::Mutex::new(Vec::new());
-    let groups = FETCH_PARALLELISM.min(repos.len());
+    // 静的に分割すると遅い1リポジトリがその担当分を丸ごと止めるので、
+    // 空いたスレッドが次を取りに行く形にする。
+    let next = AtomicUsize::new(0);
+    let failed = Mutex::new(Vec::new());
+    let workers = FETCH_PARALLELISM.min(repos.len());
 
     std::thread::scope(|scope| {
-        for offset in 0..groups {
-            let failed = &failed;
+        for _ in 0..workers {
+            let (next, failed) = (&next, &failed);
             scope.spawn(move || {
                 let mut local = Vec::new();
-                for repo in repos.iter().skip(offset).step_by(groups) {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(repo) = repos.get(i) else {
+                        break;
+                    };
                     if !fetch_repo(repo) {
                         local.push(repo.clone());
                     }
                 }
                 if !local.is_empty() {
-                    failed.lock().unwrap().extend(local);
+                    failed
+                        .lock()
+                        .expect("fetch の結果を回収できません")
+                        .extend(local);
                 }
             });
         }
     });
 
-    let mut failed = failed.into_inner().unwrap_or_default();
+    let mut failed = failed.into_inner().expect("fetch の結果を回収できません");
     failed.sort();
     failed
 }
 
+/// SSH 接続の待ち時間の上限（秒）。到達不能なホストで OS 既定の TCP タイムアウトまで
+/// 固まらないようにする。
+const SSH_CONNECT_TIMEOUT: u32 = 10;
+
 /// 1リポジトリを fetch する。リモートを持たないローカル専用リポジトリは成功扱い。
 ///
 /// 認証待ちで固まらないよう対話プロンプトを潰し、遅い接続で止まらないよう
-/// HTTP の低速打ち切りを入れる。
+/// HTTP の低速打ち切りと SSH の接続タイムアウトを入れる。
 fn fetch_repo(repo: &Path) -> bool {
     let has_remote = git_output(repo, &["remote"])
         .map(|out| !out.trim().is_empty())
@@ -309,7 +332,10 @@ fn fetch_repo(repo: &Path) -> bool {
         .env("GIT_HTTP_LOW_SPEED_TIME", "20");
     // 利用者が独自の GIT_SSH_COMMAND を持っている場合は壊さない
     if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            format!("ssh -oBatchMode=yes -oConnectTimeout={SSH_CONNECT_TIMEOUT}"),
+        );
     }
 
     cmd.output().map(|out| out.status.success()).unwrap_or(false)
@@ -320,49 +346,72 @@ struct RepoInfo {
     unreported_count: usize,
 }
 
-/// `repo:` のリポジトリから最終コミット日と未反映コミット数を取る。
+impl RepoInfo {
+    fn empty() -> Self {
+        RepoInfo {
+            last: None,
+            unreported_count: 0,
+        }
+    }
+}
+
+/// コミット日（`YYYY-MM-DD`）を全件返す。
 ///
 /// - `git log -1`（HEAD 基準）だけでは未マージの作業ブランチを取りこぼすので `--branches --remotes` を使う
 /// - `--all` は使わない。jj (Jujutsu) の `refs/jj/keep/*` を拾って件数が数倍に膨らむ
-/// - リポジトリが存在しない / git でない場合は `None` を返して続行する
+fn commit_dates(path: &Path) -> Vec<String> {
+    git_output(
+        path,
+        &[
+            "log",
+            "--format=%ad",
+            "--date=short",
+            "--branches",
+            "--remotes",
+        ],
+    )
+    .map(|out| {
+        out.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// `repo:` のリポジトリから最終コミット日と未反映コミット数を取る。
+///
+/// 最終日も未反映件数も、1回のクエリで取った同じ日付の列から作る。
+/// 件数だけ git 側（`--after`）に数えさせると日付の基準が食い違い、
+/// フラグと件数が矛盾する: `%ad` は **author date** をコミット自身のタイムゾーンで
+/// 描画するのに対し、`--after` は **committer date** を実行環境のローカル
+/// タイムゾーンで解釈するため、同じデータでも `TZ` によって件数が変わってしまう。
+///
+/// 最終日に `git log -1` を使わないのも同じ理由で、`-1` は commit date 順の
+/// 先頭1件から author date を出すので、rebase / cherry-pick で両者がずれると
+/// 他のコミットより古い日付を返す。ここでは最大値を取る。
+///
+/// リポジトリが存在しない / git でない場合は `None` を返して続行する。
 fn repo_info(repo: &str, log_last: Option<&str>) -> RepoInfo {
     let path = expand_home(repo);
     if !path.exists() {
-        return RepoInfo {
-            last: None,
-            unreported_count: 0,
-        };
+        return RepoInfo::empty();
     }
 
-    let last = git_output(&path, &["log", "-1", "--format=%ad", "--date=short", "--branches", "--remotes"])
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let dates = commit_dates(&path);
+    let Some(last) = dates.iter().max().cloned() else {
+        return RepoInfo::empty();
+    };
 
-    if last.is_none() {
-        return RepoInfo {
-            last: None,
-            unreported_count: 0,
-        };
-    }
-
-    // `--since=<log_last>` は log_last 当日 00:00 以降を含むので使わない。
-    // unreported の判定が厳密大なりである以上、当日のコミットは反映済みと見なす必要がある。
-    let mut args: Vec<String> = vec![
-        "log".into(),
-        "--format=%H".into(),
-        "--branches".into(),
-        "--remotes".into(),
-    ];
-    if let Some(log_last) = log_last {
-        args.push(format!("--after={log_last} 23:59:59"));
-    }
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let unreported_count = git_output(&path, &arg_refs)
-        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0);
+    // `is_unreported` と同じ厳密大なりで数える。log_last 当日のコミットは反映済み。
+    // ログが1件も無い PJ はコミット全件が未反映（`is_unreported` も true を返す）。
+    let unreported_count = match log_last {
+        Some(log_last) => dates.iter().filter(|d| d.as_str() > log_last).count(),
+        None => dates.len(),
+    };
 
     RepoInfo {
-        last,
+        last: Some(last),
         unreported_count,
     }
 }
@@ -547,7 +596,7 @@ fn collect_projects(
         })
         .collect();
 
-    projects.sort_by_key(sort_key);
+    projects.sort_by_cached_key(sort_key);
     Collected {
         projects,
         fetch_failed,
@@ -953,12 +1002,25 @@ mod tests {
 
     #[test]
     fn test_expand_home() {
-        std::env::set_var("HOME", "/home/test");
+        // プロセスの HOME を書き換えると他のテストに漏れるので引数で渡す
+        let home = PathBuf::from("/home/test");
         assert_eq!(
-            expand_home("~/workspace/x"),
+            expand_home_with("~/workspace/x", Some(&home)),
             PathBuf::from("/home/test/workspace/x")
         );
-        assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
+        assert_eq!(
+            expand_home_with("/abs/path", Some(&home)),
+            PathBuf::from("/abs/path")
+        );
+    }
+
+    #[test]
+    fn test_expand_home_without_home() {
+        // HOME が無い環境では `~/` を展開せずそのまま扱う
+        assert_eq!(
+            expand_home_with("~/workspace/x", None),
+            PathBuf::from("~/workspace/x")
+        );
     }
 
     // --- sort ---
@@ -974,7 +1036,7 @@ mod tests {
         c.unreported = true;
 
         let mut list = [a, b, c];
-        list.sort_by_key(sort_key);
+        list.sort_by_cached_key(sort_key);
         assert_eq!(list[0].name, "C");
         assert_eq!(list[1].name, "B");
         assert_eq!(list[2].name, "A");
@@ -987,7 +1049,7 @@ mod tests {
         let b = project("B"); // ログなし
 
         let mut list = [a, b];
-        list.sort_by_key(sort_key);
+        list.sort_by_cached_key(sort_key);
         assert_eq!(list[0].name, "B");
     }
 
@@ -1001,7 +1063,7 @@ mod tests {
         b.health = PjHealth::NoNext;
 
         let mut list = [a, b];
-        list.sort_by_key(sort_key);
+        list.sort_by_cached_key(sort_key);
         assert_eq!(list[0].name, "B");
     }
 
