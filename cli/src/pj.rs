@@ -103,6 +103,16 @@ fn days_between(from: &str, to: &str) -> Option<i64> {
     Some((to - from).num_days())
 }
 
+/// 基準日（`--today`）より後の日付か。
+///
+/// 基準日より後のログ・コミット・言及は「その時点ではまだ無い」ものとして捨てる。
+/// 残すと経過日数が負になり、`--today` で過去を振り返ったときに
+/// 当時存在しなかったものが `-7d` のように並んで表になる。
+/// `YYYY-MM-DD` は辞書順と日付順が一致するので文字列のまま比べる。
+fn is_future(date: &str, today: &str) -> bool {
+    date > today
+}
+
 /// `~/...` をホームディレクトリに展開する。
 fn expand_home(path: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -120,13 +130,20 @@ fn expand_home_with(path: &str, home: Option<&Path>) -> PathBuf {
 /// `git log --name-only --format=%x00%ad` の出力から、パス → 最終更新日を作る。
 ///
 /// git log は新しい順に出るので、最初に現れたものが最終更新日になる。
-fn parse_git_name_only(output: &str) -> HashMap<String, String> {
+/// 基準日より後のコミットは読み飛ばすので、`--today` に過去日を渡すと
+/// その時点での最終更新日になる。
+fn parse_git_name_only(output: &str, today: &str) -> HashMap<String, String> {
     let mut result = HashMap::new();
     let mut current_date: Option<String> = None;
 
     for line in output.lines() {
         if let Some(date) = line.strip_prefix('\0') {
-            current_date = Some(date.trim().to_string());
+            let date = date.trim().to_string();
+            current_date = if is_future(&date, today) {
+                None
+            } else {
+                Some(date)
+            };
             continue;
         }
         let path = line.trim();
@@ -146,7 +163,7 @@ fn parse_git_name_only(output: &str) -> HashMap<String, String> {
 /// `-c core.quotepath=false` が無いと日本語ファイル名が8進エスケープされて一致しない。
 /// `--relative` が無いとパスがリポジトリルート相対で出るため、taski ディレクトリが
 /// リポジトリ直下でない場合（dotfiles リポジトリ配下など）に `note/*.md` と一致しなくなる。
-fn note_last_updated(base_dir: &Path) -> HashMap<String, String> {
+fn note_last_updated(base_dir: &Path, today: &str) -> HashMap<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(base_dir)
@@ -165,7 +182,7 @@ fn note_last_updated(base_dir: &Path) -> HashMap<String, String> {
 
     match output {
         Ok(out) if out.status.success() => {
-            parse_git_name_only(&String::from_utf8_lossy(&out.stdout))
+            parse_git_name_only(&String::from_utf8_lossy(&out.stdout), today)
         }
         _ => HashMap::new(),
     }
@@ -204,8 +221,13 @@ fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
 /// journal で各 PJ が最後に言及された日を取る。
 ///
 /// 新しい日付から順に見て、全 PJ が見つかった時点で打ち切る。
+/// 基準日より後の journal（明日のタスクを先に書いた場合など）は見ない。
 /// 空白を含む PJ 名は `#タグ` で書けないので、実質 `[[名前]]` のみが効く。
-fn journal_last_mentions(base_dir: &Path, names: &[String]) -> HashMap<String, String> {
+fn journal_last_mentions(
+    base_dir: &Path,
+    names: &[String],
+    today: &str,
+) -> HashMap<String, String> {
     let mut result: HashMap<String, String> = HashMap::new();
     if names.is_empty() {
         return result;
@@ -223,6 +245,9 @@ fn journal_last_mentions(base_dir: &Path, names: &[String]) -> HashMap<String, S
     for (date, path) in journal_files_desc(base_dir) {
         if remaining.is_empty() {
             break;
+        }
+        if is_future(&date, today) {
+            continue;
         }
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
@@ -392,13 +417,28 @@ fn commit_dates(path: &Path) -> Vec<String> {
 /// 他のコミットより古い日付を返す。ここでは最大値を取る。
 ///
 /// リポジトリが存在しない / git でない場合は `None` を返して続行する。
-fn repo_info(repo: &str, log_last: Option<&str>) -> RepoInfo {
+///
+/// 基準日より後のコミットは数えない。`--today` に過去日を渡したときに
+/// 当時まだ存在しないコミットで「未反映」と言わないため。
+///
+/// ここには既定の `today`（実行環境のローカル日付）とのタイムゾーン差という穴がある。
+/// `%ad` は author date を **コミット自身のタイムゾーン** で描画するので、自分より東の
+/// タイムゾーン（UTC+13 など）や時計のずれた環境で作られたコミットは、ローカルの「今日」より
+/// 1日先の日付を持ちうる。それが除外されると `repo_last` が1つ古いコミットまで巻き戻り、
+/// 未反映の作業があるのに `unreported` が false に倒れる。以前は `repo_days: -1` として
+/// 見えていた分、誤りが可視から不可視に変わっている。個人の PJ ノート用途では
+/// 発生頻度が低いので許容しているが、他所からのコミットが混ざるリポジトリを
+/// 対象にするなら、基準日が既定のときだけ日数を 0 でクランプする等の対処が要る。
+fn repo_info(repo: &str, log_last: Option<&str>, today: &str) -> RepoInfo {
     let path = expand_home(repo);
     if !path.exists() {
         return RepoInfo::empty();
     }
 
-    let dates = commit_dates(&path);
+    let dates: Vec<String> = commit_dates(&path)
+        .into_iter()
+        .filter(|d| !is_future(d, today))
+        .collect();
     let Some(last) = dates.iter().max().cloned() else {
         return RepoInfo::empty();
     };
@@ -476,7 +516,7 @@ fn collect_projects(
     fetch: bool,
 ) -> Collected {
     let note_dir = base_dir.join("note");
-    let updated_map = note_last_updated(base_dir);
+    let updated_map = note_last_updated(base_dir, today);
 
     struct Pending {
         name: String,
@@ -524,7 +564,7 @@ fn collect_projects(
     }
 
     let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
-    let mentions = journal_last_mentions(base_dir, &names);
+    let mentions = journal_last_mentions(base_dir, &names, today);
 
     // 1つのリポジトリを複数 PJ が共有することがあるので重複を潰してから fetch する
     let fetch_failed: Vec<String> = if fetch {
@@ -548,11 +588,19 @@ fn collect_projects(
     let mut projects: Vec<PjProject> = pending
         .into_iter()
         .map(|p| {
-            let log_last = p.note.log_last().map(|s| s.to_string());
+            // 基準日より後のログは「その時点ではまだ書かれていない」ものとして落とす。
+            // logs は新しい順なので、残った先頭が基準日時点の最新ログになる。
+            let mut logs: Vec<PjLogEntry> = p
+                .note
+                .logs
+                .into_iter()
+                .filter(|l| !is_future(&l.date, today))
+                .collect();
+            let log_last = logs.first().map(|l| l.date.clone());
             let repo_data = p
                 .repo
                 .as_deref()
-                .map(|repo| repo_info(repo, log_last.as_deref()));
+                .map(|repo| repo_info(repo, log_last.as_deref(), today));
 
             let repo_last = repo_data.as_ref().and_then(|r| r.last.clone());
             let unreported = is_unreported(repo_last.as_deref(), log_last.as_deref());
@@ -565,7 +613,6 @@ fn collect_projects(
             let updated = updated_map.get(&p.rel_path).cloned();
             let journal_last = mentions.get(&p.name).cloned();
 
-            let mut logs = p.note.logs.clone();
             logs.truncate(LOG_LIMIT);
 
             PjProject {
@@ -943,21 +990,39 @@ mod tests {
         assert_eq!(days_between("なんか", "2026-08-02"), None);
     }
 
+    #[test]
+    fn test_is_future() {
+        assert!(is_future("2026-08-02", "2026-08-01"));
+        // 基準日当日は「未来」ではない
+        assert!(!is_future("2026-08-01", "2026-08-01"));
+        assert!(!is_future("2026-07-31", "2026-08-01"));
+    }
+
     // --- git log parsing ---
 
     #[test]
     fn test_parse_git_name_only_keeps_newest() {
         let output = "\u{0}2026-08-01\n\nnote/A.md\nnote/B.md\n\u{0}2026-07-20\n\nnote/A.md\nnote/C.md\n";
-        let map = parse_git_name_only(output);
+        let map = parse_git_name_only(output, "2026-08-02");
         assert_eq!(map.get("note/A.md").map(|s| s.as_str()), Some("2026-08-01"));
         assert_eq!(map.get("note/B.md").map(|s| s.as_str()), Some("2026-08-01"));
         assert_eq!(map.get("note/C.md").map(|s| s.as_str()), Some("2026-07-20"));
     }
 
     #[test]
+    fn test_parse_git_name_only_skips_commits_after_today() {
+        // 基準日より後のコミットは無かったことにするので、
+        // A は 07-20 まで巻き戻り、そこにしか出てこない B は消える
+        let output = "\u{0}2026-08-01\n\nnote/A.md\nnote/B.md\n\u{0}2026-07-20\n\nnote/A.md\n";
+        let map = parse_git_name_only(output, "2026-07-25");
+        assert_eq!(map.get("note/A.md").map(|s| s.as_str()), Some("2026-07-20"));
+        assert_eq!(map.get("note/B.md"), None);
+    }
+
+    #[test]
     fn test_parse_git_name_only_handles_japanese_paths() {
         let output = "\u{0}2026-08-01\n\nnote/漫画制作エディタ.md\n";
-        let map = parse_git_name_only(output);
+        let map = parse_git_name_only(output, "2026-08-02");
         assert_eq!(
             map.get("note/漫画制作エディタ.md").map(|s| s.as_str()),
             Some("2026-08-01")
@@ -966,7 +1031,7 @@ mod tests {
 
     #[test]
     fn test_parse_git_name_only_empty() {
-        assert!(parse_git_name_only("").is_empty());
+        assert!(parse_git_name_only("", "2026-08-02").is_empty());
     }
 
     // --- unreported ---

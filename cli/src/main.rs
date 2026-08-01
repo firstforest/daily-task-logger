@@ -4,7 +4,7 @@ use chrono::Local;
 use clap::{Parser, Subcommand};
 use parser_core::{
     build_schedule_data_internal, build_tree_data_internal, extract_file_tags, extract_tags,
-    FileInput, TaskStatus, TreeDateGroup,
+    FileInput, ScheduleEntry, TaskStatus, TreeDateGroup,
 };
 use std::fs;
 use std::fs::OpenOptions;
@@ -230,6 +230,77 @@ fn filter_tree_by_tag(
         .collect()
 }
 
+/// 構造化出力のフォーマット。
+///
+/// 0件のときも構造化出力なら空の配列を返せるよう、フォーマットの解釈を
+/// 集計より前に済ませておく。集計を先にすると「0件だからメッセージを出して return」が
+/// 先に走り、呼び出し側のパースが0件のときだけ壊れる。
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum OutputFormat {
+    Text,
+    Json,
+    Yaml,
+}
+
+/// `Err` はそのまま `エラー: {}` に流せるメッセージ。
+fn parse_output_format(format: Option<&str>) -> Result<OutputFormat, String> {
+    match format {
+        None => Ok(OutputFormat::Text),
+        Some("json") => Ok(OutputFormat::Json),
+        Some("yaml") => Ok(OutputFormat::Yaml),
+        Some(other) => Err(format!("未対応のフォーマットです: {other}")),
+    }
+}
+
+/// コマンドラインから受け取ったフォーマットを解釈する。未対応ならエラー終了。
+fn output_format_or_exit(format: Option<&str>) -> OutputFormat {
+    parse_output_format(format).unwrap_or_else(|msg| {
+        eprintln!("エラー: {msg}");
+        process::exit(1);
+    })
+}
+
+/// 集計結果を出力する。
+///
+/// `json` / `yaml` は該当0件でも `[]` を返す。呼び出し側が必ずパースできるようにするためで、
+/// ここで日本語のメッセージを出すと0件のときだけパースが壊れる。
+/// テキスト表示のときだけ `print_text` に委ねる。
+fn print_output<T: serde::Serialize + ?Sized>(
+    value: &T,
+    format: OutputFormat,
+    print_text: impl FnOnce(),
+) {
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(value).unwrap_or_else(|e| {
+                eprintln!("エラー: JSON変換に失敗しました: {e}");
+                process::exit(1);
+            });
+            println!("{json}");
+        }
+        OutputFormat::Yaml => {
+            let yaml = serde_yaml::to_string(value).unwrap_or_else(|e| {
+                eprintln!("エラー: YAML変換に失敗しました: {e}");
+                process::exit(1);
+            });
+            print!("{yaml}");
+        }
+        OutputFormat::Text => print_text(),
+    }
+}
+
+/// 該当0件のときにテキスト表示で出すメッセージは呼び出し側から渡す。
+/// 「ファイルが1つも無い」と「絞り込みで0件」を呼び分けるため。
+fn print_tree(tree: &[TreeDateGroup], format: OutputFormat, empty_message: &str) {
+    print_output(tree, format, || {
+        if tree.is_empty() {
+            println!("{empty_message}");
+            return;
+        }
+        print_tree_text(tree);
+    });
+}
+
 fn list_tasks(format: Option<String>, tag: Option<String>) {
     let base_dir = taski_dir();
     if !base_dir.exists() {
@@ -237,9 +308,12 @@ fn list_tasks(format: Option<String>, tag: Option<String>) {
         process::exit(1);
     }
 
+    let out_format = output_format_or_exit(format.as_deref());
+
     let md_files = collect_md_files(&base_dir);
     if md_files.is_empty() {
-        println!("タスクが見つかりません");
+        // ファイルが1つも無い場合も構造化出力なら空配列を返す
+        print_tree(&[], out_format, "タスクが見つかりません");
         return;
     }
 
@@ -281,40 +355,15 @@ fn list_tasks(format: Option<String>, tag: Option<String>) {
         tree
     };
 
-    if tree.is_empty() {
-        if tag.is_some() {
-            println!("該当するタグのタスクが見つかりません");
-        } else {
-            println!("未完了のタスクはありません");
-        }
-        return;
-    }
+    let empty_message = if tag.is_some() {
+        "該当するタグのタスクが見つかりません"
+    } else {
+        "未完了のタスクはありません"
+    };
+    print_tree(&tree, out_format, empty_message);
+}
 
-    if let Some(fmt) = format {
-        match fmt.as_str() {
-            "json" => {
-                let json = serde_json::to_string_pretty(&tree).unwrap_or_else(|e| {
-                    eprintln!("エラー: JSON変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                println!("{json}");
-                return;
-            }
-            "yaml" => {
-                let yaml = serde_yaml::to_string(&tree).unwrap_or_else(|e| {
-                    eprintln!("エラー: YAML変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                print!("{yaml}");
-                return;
-            }
-            _ => {
-                eprintln!("エラー: 未対応のフォーマットです: {fmt}");
-                process::exit(1);
-            }
-        }
-    }
-
+fn print_tree_text(tree: &[TreeDateGroup]) {
     for (i, date_group) in tree.iter().enumerate() {
         if i > 0 {
             println!();
@@ -354,11 +403,19 @@ fn show_schedule(format: Option<String>, date: Option<String>) {
         process::exit(1);
     }
 
+    let out_format = output_format_or_exit(format.as_deref());
+
     let target_date = date.unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
 
     let md_files = collect_md_files(&base_dir);
     if md_files.is_empty() {
-        println!("スケジュールが見つかりません");
+        // ファイルが1つも無い場合も構造化出力なら空配列を返す
+        print_schedule(
+            &[],
+            out_format,
+            &target_date,
+            "スケジュールが見つかりません",
+        );
         return;
     }
 
@@ -381,40 +438,31 @@ fn show_schedule(format: Option<String>, date: Option<String>) {
         .collect();
 
     let entries = build_schedule_data_internal(files, &target_date);
+    let empty_message = format!("{target_date} のスケジュールはありません");
+    print_schedule(&entries, out_format, &target_date, &empty_message);
+}
 
-    if entries.is_empty() {
-        println!("{target_date} のスケジュールはありません");
-        return;
-    }
-
-    if let Some(fmt) = format {
-        match fmt.as_str() {
-            "json" => {
-                let json = serde_json::to_string_pretty(&entries).unwrap_or_else(|e| {
-                    eprintln!("エラー: JSON変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                println!("{json}");
-            }
-            "yaml" => {
-                let yaml = serde_yaml::to_string(&entries).unwrap_or_else(|e| {
-                    eprintln!("エラー: YAML変換に失敗しました: {e}");
-                    process::exit(1);
-                });
-                print!("{yaml}");
-            }
-            _ => {
-                eprintln!("エラー: 未対応のフォーマットです: {fmt}");
-                process::exit(1);
-            }
+/// `list` と同じ契約で、`json` / `yaml` は該当0件でも `[]` を返す（`print_output` を参照）。
+fn print_schedule(
+    entries: &[ScheduleEntry],
+    format: OutputFormat,
+    target_date: &str,
+    empty_message: &str,
+) {
+    print_output(entries, format, || {
+        if entries.is_empty() {
+            println!("{empty_message}");
+            return;
         }
-        return;
-    }
+        print_schedule_text(entries, target_date);
+    });
+}
 
+fn print_schedule_text(entries: &[ScheduleEntry], target_date: &str) {
     println!("\x1b[1m📅 {target_date}\x1b[0m");
     println!();
 
-    for entry in &entries {
+    for entry in entries {
         let time_display = if !entry.time.is_empty() {
             if !entry.end_time.is_empty() {
                 format!("{}-{}", entry.time, entry.end_time)
@@ -701,6 +749,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_output_format() {
+        assert_eq!(parse_output_format(None), Ok(OutputFormat::Text));
+        assert_eq!(parse_output_format(Some("json")), Ok(OutputFormat::Json));
+        assert_eq!(parse_output_format(Some("yaml")), Ok(OutputFormat::Yaml));
+    }
+
+    #[test]
+    fn test_parse_output_format_rejects_unsupported() {
+        // Err はそのまま `エラー: {}` に流せるメッセージであること
+        assert_eq!(
+            parse_output_format(Some("csv")),
+            Err("未対応のフォーマットです: csv".to_string())
+        );
+    }
 
     #[test]
     fn test_toggle_line_incomplete_to_complete() {

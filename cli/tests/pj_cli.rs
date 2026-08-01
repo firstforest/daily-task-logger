@@ -5,35 +5,13 @@
 //! 判定が厳密大なり（`repo_last > log_last`）である以上、
 //! 「同日のコミットは反映済み」という境界の扱いがフラグと件数で食い違いやすい。
 
+mod common;
+
+use common::TempHome;
+use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// テスト用の一時ディレクトリ。Drop で消す。
-struct TempHome(PathBuf);
-
-impl TempHome {
-    fn new(label: &str) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("taski-pj-{label}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        TempHome(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempHome {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn git(repo: &Path, args: &[&str], date: Option<&str>) {
     git_dates(repo, args, date, date);
@@ -95,6 +73,18 @@ fn commit_file(repo: &Path, i: usize, author: Option<&str>, committer: Option<&s
         author,
         committer,
     );
+}
+
+/// 現在の HEAD のコミットハッシュ。fetch が作業ツリーを動かしていないことの確認に使う。
+fn rev_parse(repo: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git を実行できません");
+    assert!(out.status.success(), "rev-parse に失敗しました");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn write_note(home: &Path, name: &str, body: &str) {
@@ -500,6 +490,67 @@ fn test_fetch_is_on_by_default_and_skips_repos_without_remote() {
     assert_eq!(find(&json, "ローカル専用PJ")["repo_last"], "2026-07-26");
 }
 
+/// fetch そのものが効いていること（周辺ケースではなく本命の経路）。
+///
+/// clone が知らないコミットが origin にある状態を作り、既定では新しいコミットを
+/// 拾えること・`--no-fetch` では拾えないことを両方見る。この差が出ないなら
+/// fetch は呼ばれていない（他の fetch テストは呼ばれなくても通ってしまう）。
+#[test]
+fn test_fetch_updates_stale_clone() {
+    let home = TempHome::new("fetch-updates");
+    let root = home.path();
+
+    // origin 側にだけ 07-31 のコミットがある状態にする
+    let origin = make_repo(root, "repo-origin", &["2026-07-20"]);
+    let clone = root.join("repo-clone");
+    git(
+        root,
+        &["clone", &origin.to_string_lossy(), &clone.to_string_lossy()],
+        None,
+    );
+    commit_file(
+        &origin,
+        99,
+        Some("2026-07-31T12:00:00+09:00"),
+        Some("2026-07-31T12:00:00+09:00"),
+    );
+
+    write_note(
+        root,
+        "古いclonePJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# 古いclonePJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-07-25: ここまで\n",
+            clone.display()
+        ),
+    );
+
+    let head_before = rev_parse(&clone);
+
+    // fetch しなければ clone が知っている 07-20 までしか見えない
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-01"],
+    );
+    let p = find(&json, "古いclonePJ");
+    assert_eq!(p["repo_last"], "2026-07-20");
+    assert_eq!(p["unreported"], false);
+
+    // 既定では fetch するので origin の 07-31 を拾い、ログ（07-25）より新しいので未反映になる
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    assert_eq!(json["fetch_failed"].as_array().unwrap().len(), 0);
+    let p = find(&json, "古いclonePJ");
+    assert_eq!(p["repo_last"], "2026-07-31", "fetch が効いていない");
+    assert_eq!(p["unreported"], true);
+    assert_eq!(p["unreported_count"], 1);
+
+    // fetch のみで pull はしない: HEAD も作業ツリーも触らない
+    assert_eq!(rev_parse(&clone), head_before, "HEAD が動いている");
+    assert!(
+        !clone.join("f99.txt").exists(),
+        "作業ツリーに origin のファイルが現れている"
+    );
+}
+
 #[test]
 fn test_no_fetch_flag() {
     let home = TempHome::new("no-fetch");
@@ -567,6 +618,137 @@ fn test_fetch_failure_is_reported_but_does_not_abort() {
     let p = find(&json, "壊れたremotePJ");
     assert_eq!(p["repo_last"], "2026-07-26");
     assert_eq!(p["unreported"], true);
+}
+
+/// `--today` に過去日を渡すと、その日時点の状態を再現する。
+///
+/// 基準日より後のログ・コミット・言及は「まだ無い」ものとして扱う。
+/// 残すと経過日数が負になり、当時存在しなかったものが `-7d` として並んでしまう。
+#[test]
+fn test_past_today_reproduces_that_days_state() {
+    let home = TempHome::new("past-today");
+    let root = home.path();
+    let taski = root.join("taski");
+
+    // 07-20 と 07-31 のコミット。基準日 07-25 の時点では 07-20 までしか無い
+    let repo = make_repo(root, "repo-past", &["2026-07-20", "2026-07-31"]);
+
+    write_note(
+        root,
+        "振り返りPJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# 振り返りPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-08-01: 基準日より後のログ\n- 2026-07-18: 基準日より前のログ\n",
+            repo.display()
+        ),
+    );
+
+    let journal_dir = taski.join("journal").join("2026").join("07");
+    fs::create_dir_all(&journal_dir).unwrap();
+    fs::write(
+        journal_dir.join("2026-07-15.md"),
+        "# 2026-07-15\n\n- [ ] [[振り返りPJ]] を進める\n",
+    )
+    .unwrap();
+    // 基準日より後の journal（先に書いた明日のぶん）は見ない
+    fs::write(
+        journal_dir.join("2026-07-30.md"),
+        "# 2026-07-30\n\n- [ ] [[振り返りPJ]] の続き\n",
+    )
+    .unwrap();
+
+    // note の最終更新日（git 基準）も基準日より後なので、07-25 時点では未コミット扱い
+    git(&taski, &["init"], None);
+    git(&taski, &["add", "."], None);
+    git(
+        &taski,
+        &["commit", "-m", "初回"],
+        Some("2026-07-30T12:00:00+09:00"),
+    );
+
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-07-25"],
+    );
+    let p = find(&json, "振り返りPJ");
+
+    assert_eq!(p["log_last"], "2026-07-18");
+    assert_eq!(p["log_days"], 7);
+    assert_eq!(p["repo_last"], "2026-07-20");
+    assert_eq!(p["repo_days"], 5);
+    assert_eq!(p["journal_last"], "2026-07-15");
+    assert_eq!(p["journal_days"], 10);
+    assert_eq!(p["updated"], serde_json::Value::Null);
+    assert_eq!(p["stale_days"], serde_json::Value::Null);
+    // 07-20 のコミットはログ（07-18）より新しいので、この時点では未反映
+    assert_eq!(p["unreported"], true);
+    assert_eq!(p["unreported_count"], 1);
+    // 基準日より後のログは再開時のコンテキストにも出さない
+    let log_dates: Vec<&str> = p["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["date"].as_str().unwrap())
+        .collect();
+    assert_eq!(log_dates, ["2026-07-18"]);
+
+    for key in ["stale_days", "log_days", "repo_days", "journal_days"] {
+        let v = &p[key];
+        assert!(
+            v.is_null() || v.as_i64().unwrap() >= 0,
+            "{key} が負になっている: {v}"
+        );
+    }
+
+    // 基準日を今日側に戻せば、後ろのログもコミットも見える
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-02"],
+    );
+    let p = find(&json, "振り返りPJ");
+    assert_eq!(p["log_last"], "2026-08-01");
+    assert_eq!(p["repo_last"], "2026-07-31");
+    assert_eq!(p["journal_last"], "2026-07-30");
+    assert_eq!(p["updated"], "2026-07-30");
+}
+
+/// table でも過去日で負の日数が出ないこと。
+#[test]
+fn test_past_today_table_has_no_negative_days() {
+    let home = TempHome::new("past-today-table");
+    let root = home.path();
+    let repo = make_repo(root, "repo-past-table", &["2026-07-31"]);
+
+    write_note(
+        root,
+        "未来コミットPJ",
+        &format!(
+            "---\nproject: active\nrepo: {}\n---\n# 未来コミットPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-08-01: 基準日より後のログ\n",
+            repo.display()
+        ),
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_taski"))
+        .env("HOME", root)
+        .args(["pj", "--no-fetch", "--today", "2026-07-25"])
+        .output()
+        .expect("taski を実行できません");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 特定の文字列（`-7d`）ではなく日数セルの形で見る。書式が変わっても素通りしないように。
+    let negative_days = Regex::new(r"-\d+d").unwrap();
+    assert!(
+        !negative_days.is_match(&stdout),
+        "負の日数が出ている:\n{stdout}"
+    );
+    // 基準日時点ではログもコミットも無いので `-` になる
+    assert!(
+        stdout.contains("未来コミットPJ"),
+        "PJ が出ていない:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("未反映 0件"),
+        "未反映が数えられている:\n{stdout}"
+    );
 }
 
 #[test]
