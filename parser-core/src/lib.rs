@@ -2,6 +2,7 @@ pub mod pj;
 pub mod wiki_link;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -612,9 +613,16 @@ pub struct FrontMatterParsed {
 
 // === Tag extraction ===
 
+/// 行単位で何度も呼ばれるのでコンパイル結果を使い回す（`journal_work` は
+/// journal のタスク行ごとにこれを引く）。
+fn tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"#([^\s#]+)").unwrap())
+}
+
 pub fn extract_tags(text: &str) -> Vec<String> {
-    let re = Regex::new(r"#([^\s#]+)").unwrap();
-    re.captures_iter(text)
+    tag_re()
+        .captures_iter(text)
         .map(|cap| cap[1].to_string())
         .collect()
 }
