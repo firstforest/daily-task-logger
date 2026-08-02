@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
+
+use crate::docs::{journal_files_desc, note_files};
 use parser_core::pj::{
     collect_document_refs, journal_work, parse_pj_note, PjHealth, PjId, PjLogEntry,
 };
@@ -198,36 +200,6 @@ fn note_last_updated(base_dir: &Path, today: &str) -> HashMap<String, String> {
             parse_git_name_only(&String::from_utf8_lossy(&out.stdout), today)
         }
         _ => HashMap::new(),
-    }
-}
-
-/// journal ファイルを新しい順に並べる（ファイル名が `YYYY-MM-DD.md` のものだけを対象にする）。
-fn journal_files_desc(base_dir: &Path) -> Vec<(String, PathBuf)> {
-    let mut files: Vec<(String, PathBuf)> = Vec::new();
-    collect_journal_files(&base_dir.join("journal"), &mut files);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-    files
-}
-
-fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_journal_files(&path, files);
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_string()) else {
-            continue;
-        };
-        if NaiveDate::parse_from_str(&stem, "%Y-%m-%d").is_ok() {
-            files.push((stem, path));
-        }
     }
 }
 
@@ -578,21 +550,6 @@ fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn collect_note_files(note_dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    let Ok(entries) = fs::read_dir(note_dir) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files
-}
-
 /// 手を入れる必要が高い順に並べる。
 ///
 /// 1. 未反映（`!`）を最優先。作業は進んでいるのに taski が捉えられていない状態
@@ -654,7 +611,6 @@ fn collect_projects(
     today: &str,
     fetch: bool,
 ) -> Collected {
-    let note_dir = base_dir.join("note");
     let updated_map = note_last_updated(base_dir, today);
 
     struct Pending {
@@ -667,7 +623,7 @@ fn collect_projects(
 
     let mut pending: Vec<Pending> = Vec::new();
 
-    for path in collect_note_files(&note_dir) {
+    for path in note_files(base_dir) {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };

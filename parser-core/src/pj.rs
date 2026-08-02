@@ -56,8 +56,18 @@ impl PjId {
     }
 
     /// 参照と突き合わせるためのキー。
+    ///
+    /// 多数の参照と突き合わせるときは、これを鍵にした集合を作って引く（`cli::pj`）。
     pub fn match_key(&self) -> String {
         crate::wiki_link::match_key(&self.0)
+    }
+
+    /// 参照 `r` がこの PJ を指すか（docs/domain.md §4 の `hits`）。
+    ///
+    /// [`crate::wiki_link::hits`] と同じ関係を PJ 名の側から見たもの。`PjId` は
+    /// ノートの `stem` なので `hits(path, r)` と一致する。
+    pub fn hits(&self, ref_text: &str) -> bool {
+        self.match_key() == crate::wiki_link::match_key(ref_text)
     }
 }
 
@@ -996,6 +1006,17 @@ mod tests {
     fn test_collect_document_refs_resumes_after_code_block() {
         let l = lines(&["```", "[[コード内]]", "```", "本文の [[在庫管理]]"]);
         assert_eq!(collect_document_refs(&l), ["在庫管理"]);
+    }
+
+    #[test]
+    fn test_pj_id_hits_agrees_with_path_level_hits() {
+        // 名前側から見た `hits` とパス側から見た `hits` は同じ関係でなければならない。
+        // ここがずれると「開けるが PJ にならない」が復活する（G-5）
+        let path = std::path::Path::new("/a/note/在庫_管理.md");
+        let id = PjId::from_path(path);
+        for r in ["在庫 管理", "在庫_管理", "別のもの"] {
+            assert_eq!(id.hits(r), crate::wiki_link::hits(path, r), "参照: {r}");
+        }
     }
 
     #[test]

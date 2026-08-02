@@ -55,21 +55,34 @@ pub fn normalize_wiki_name(raw: &str) -> NormalizedName {
     }
 }
 
-pub fn resolve_wiki_link(name: &str, candidates: &[PathBuf]) -> Option<PathBuf> {
-    let target = Path::new(name)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| name.to_string());
+/// 参照 `r` が文書 `d` を指すか（docs/domain.md §4 の `hits`）。
+///
+/// 名前レベルの原子であり、参照の解決はすべてこの述語の上に載る。照合キーを
+/// **両側**に掛けて比べるので、`[[在庫 管理]]` と `#在庫_管理` は同じ文書を指す。
+///
+/// PJ の照合（`cli::pj`）も同じ関係を使う。かつては「開くときはファイル名の完全一致、
+/// 集計するときは文字列一致」と 2 系統に分かれており、`note/在庫_管理.md` が
+/// `[[在庫 管理]]` で開けないといった食い違いがあった（design.md G-5）。
+pub fn hits(path: &Path, ref_text: &str) -> bool {
+    match_key(&stem(path)) == match_key(ref_text)
+}
 
-    for candidate in candidates {
-        let stem = candidate
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string());
-        if stem.as_deref() == Some(target.as_str()) {
-            return Some(candidate.clone());
-        }
-    }
-    None
+/// 参照を解決する（docs/domain.md §4 の `resolve`）。
+///
+/// **候補列の順序が優先順位を表す。** requirements.md 3.4 が定める
+/// 「`$HOME/taski` > ワークスペース > 追加ディレクトリ > 開いているドキュメント」は、
+/// 呼び出し側が候補をこの順に並べることで表現する。したがって複数一致したときは
+/// 先頭を採る。
+///
+/// domain.md §4 は「唯一の `d`（無ければ `None`）」と定めているが、上の優先順位が
+/// 要求である以上、探索範囲をまたいだ一致を曖昧として捨てるわけにはいかない。
+/// 一意性を課せるのは 1 つの探索範囲の中だけで、実際に課しているのは PJ ノートの
+/// 集合に対してだけである（`cli::pj` が衝突を警告する。design.md W-9）。
+pub fn resolve(ref_text: &str, candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|path| hits(path, ref_text))
+        .cloned()
 }
 
 pub fn wiki_link_create_path(name: &str, is_journal: bool, taski_home: &Path) -> PathBuf {
@@ -209,7 +222,7 @@ mod tests {
             PathBuf::from("/home/u/taski/foo.md"),
             PathBuf::from("/home/u/work/foo.md"),
         ];
-        let got = resolve_wiki_link("foo", &candidates);
+        let got = resolve("foo", &candidates);
         assert_eq!(got, Some(PathBuf::from("/home/u/taski/foo.md")));
     }
 
@@ -217,7 +230,7 @@ mod tests {
     fn test_resolve_matches_stem_ignoring_extension() {
         let candidates = vec![PathBuf::from("/a/foo.md")];
         assert_eq!(
-            resolve_wiki_link("foo", &candidates),
+            resolve("foo", &candidates),
             Some(PathBuf::from("/a/foo.md"))
         );
     }
@@ -225,7 +238,7 @@ mod tests {
     #[test]
     fn test_resolve_returns_none_when_absent() {
         let candidates = vec![PathBuf::from("/a/bar.md")];
-        assert_eq!(resolve_wiki_link("foo", &candidates), None);
+        assert_eq!(resolve("foo", &candidates), None);
     }
 
     #[test]
@@ -234,10 +247,35 @@ mod tests {
             "/home/u/taski/journal/2026/04/2026-04-14.md",
         )];
         assert_eq!(
-            resolve_wiki_link("2026-04-14", &candidates),
+            resolve("2026-04-14", &candidates),
             Some(PathBuf::from(
                 "/home/u/taski/journal/2026/04/2026-04-14.md"
             ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_goes_through_the_match_key() {
+        // `#タグ` に空白を書けない以上、ノート名に `_` を使うことがある。
+        // 開くときも集計と同じ照合キーを通す（G-5）
+        let candidates = vec![PathBuf::from("/a/在庫_管理.md")];
+        assert_eq!(
+            resolve("在庫 管理", &candidates),
+            Some(PathBuf::from("/a/在庫_管理.md"))
+        );
+        assert_eq!(
+            resolve("在庫_管理", &candidates),
+            Some(PathBuf::from("/a/在庫_管理.md"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_keeps_dots_in_the_name() {
+        // 参照名を `Path::file_stem` に通していたころは `v1.2 設計` が `v1` に潰れていた
+        let candidates = vec![PathBuf::from("/a/v1.2 設計.md")];
+        assert_eq!(
+            resolve("v1.2 設計", &candidates),
+            Some(PathBuf::from("/a/v1.2 設計.md"))
         );
     }
 

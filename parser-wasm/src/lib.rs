@@ -65,7 +65,7 @@ pub fn normalize_wiki_name(raw: &str) -> JsValue {
 pub fn resolve_wiki_link(name: &str, candidate_paths: Vec<String>) -> Option<String> {
     let candidates: Vec<std::path::PathBuf> =
         candidate_paths.into_iter().map(std::path::PathBuf::from).collect();
-    parser_core::wiki_link::resolve_wiki_link(name, &candidates)
+    parser_core::wiki_link::resolve(name, &candidates)
         .map(|p| p.to_string_lossy().to_string())
 }
 

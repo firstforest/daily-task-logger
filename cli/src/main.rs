@@ -1,6 +1,9 @@
+mod docs;
 mod pj;
 
 use chrono::Local;
+
+use crate::docs::collect_md_files;
 use clap::{Parser, Subcommand};
 use parser_core::{
     build_schedule_data_internal, build_tree_data_internal, extract_file_tags, extract_tags,
@@ -171,28 +174,6 @@ fn append_memo(text: &str, no_timestamp: bool) {
     });
 
     println!("追記しました: {}", file_path.display());
-}
-
-fn collect_md_files(dir: &PathBuf) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_md_files_recursive(dir, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_md_files_recursive(dir: &PathBuf, files: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_md_files_recursive(&path, files);
-        } else if path.extension().map_or(false, |ext| ext == "md") {
-            files.push(path);
-        }
-    }
 }
 
 fn filter_tree_by_tag(
@@ -631,7 +612,7 @@ fn generate_agents_md(output: Option<PathBuf>) {
 
 fn resolve_wiki(raw: &str, no_create: bool, format: Option<String>) {
     use parser_core::wiki_link::{
-        normalize_wiki_name, resolve_wiki_link, wiki_link_create_path, wiki_link_initial_content,
+        normalize_wiki_name, resolve, wiki_link_create_path, wiki_link_initial_content,
     };
 
     let normalized = normalize_wiki_name(raw);
@@ -642,7 +623,7 @@ fn resolve_wiki(raw: &str, no_create: bool, format: Option<String>) {
         Vec::new()
     };
 
-    let existing = resolve_wiki_link(&normalized.name, &md_files);
+    let existing = resolve(&normalized.name, &md_files);
 
     let (path, created) = match existing {
         Some(p) => (p, false),
