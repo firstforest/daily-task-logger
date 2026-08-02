@@ -692,7 +692,8 @@ pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
         return Vec::new();
     }
     let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
-    let tag = stem.replace(' ', "_");
+    // 照合キーは `cli::pj` の言及・実働の突き合わせと同じ関数から出す（design.md P4）
+    let tag = wiki_link::match_key(stem);
     if tag.is_empty() {
         return Vec::new();
     }

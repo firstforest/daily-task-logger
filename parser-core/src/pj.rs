@@ -29,6 +29,44 @@ pub const SECTION_LOG: &str = "ログ";
 /// 「オープンタスク」セクションの見出し名。
 pub const SECTION_BACKLOG: &str = "オープンタスク";
 
+/// PJ の正規名 = ノートのファイル名（docs/domain.md §4）。
+///
+/// 参照との照合は正規形どうしの比較ではなく [`match_key`] を経由する。名前をそのまま
+/// `String` で持ち回ると、照合キーを掛け忘れた比較（`refs.contains(name)`）と
+/// 掛けた比較が混在し、`[[在庫 管理]]` と `#在庫_管理` のどちらか片方しか当たらない
+/// という取りこぼしが起きる。掛ける場所を [`Self::match_key`] 1 箇所に閉じる。
+///
+/// JSON の表現は素の文字列のまま（`#[serde(transparent)]`。docs/design.md §11）。
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct PjId(String);
+
+impl PjId {
+    pub fn new(name: impl Into<String>) -> Self {
+        PjId(name.into())
+    }
+
+    /// ノートのパスから作る（`stem(path)`）。
+    pub fn from_path(path: &std::path::Path) -> Self {
+        PjId(crate::wiki_link::stem(path))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// 参照と突き合わせるためのキー。
+    pub fn match_key(&self) -> String {
+        crate::wiki_link::match_key(&self.0)
+    }
+}
+
+impl std::fmt::Display for PjId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// PJ の健全性。
 /// - `NoNext`: `## 次の予定` に `- [ ]` が無い（空 / セクション欠落 / `- [x]`・`- [-]` のみ）
 /// - `Unclarified`: 次の予定はあるが判断メタデータが無い

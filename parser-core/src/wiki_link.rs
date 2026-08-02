@@ -18,6 +18,27 @@ pub struct NormalizedName {
     pub is_journal: bool,
 }
 
+/// パスのファイル名から拡張子を落としたもの（docs/domain.md §4 の `stem`）。
+pub fn stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// 照合キー（docs/domain.md §4 の `match_key`）。空白を `_` に置換する。
+///
+/// `[[名前]]` には空白を書けるが `#タグ` には書けないので、突き合わせるには空白を
+/// 潰した形を経由するしかない（docs/syntax.md §6）。したがって参照側と PJ 名側の
+/// **両方**にこれを掛けてから比較する。片側だけに掛けると `在庫_管理.md` という
+/// ノートが `[[在庫 管理]]` で引けない。
+///
+/// この変換は非可逆で `在庫 管理` と `在庫_管理` は同じキーになる。曖昧さは
+/// 「黙って片方を採る」のではなく、探索範囲の中でキーが一意であることを要求して
+/// 表面化させる（[`crate::pj::PjId`]）。
+pub fn match_key(name: &str) -> String {
+    name.replace(' ', "_")
+}
+
 pub fn normalize_wiki_name(raw: &str) -> NormalizedName {
     let trimmed = raw.trim();
     let without_ext = trimmed
@@ -135,6 +156,24 @@ mod tests {
         assert_eq!(got[0].start, 2);
         assert_eq!(got[0].end, 9);
         assert_eq!(&text[got[0].start..got[0].end], "[[foo]]");
+    }
+
+    #[test]
+    fn test_stem_drops_extension() {
+        assert_eq!(stem(Path::new("/a/b/在庫 管理.md")), "在庫 管理");
+        assert_eq!(stem(Path::new("plain")), "plain");
+    }
+
+    #[test]
+    fn test_match_key_replaces_spaces() {
+        assert_eq!(match_key("在庫 管理"), "在庫_管理");
+    }
+
+    #[test]
+    fn test_match_key_is_idempotent() {
+        // 参照側と PJ 名側の両方に掛けるので、既に `_` の形に掛け直しても壊れないこと
+        assert_eq!(match_key("在庫_管理"), "在庫_管理");
+        assert_eq!(match_key(&match_key("在庫 管理")), match_key("在庫 管理"));
     }
 
     #[test]
