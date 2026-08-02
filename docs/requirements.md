@@ -186,7 +186,7 @@
 - `repo:` のリポジトリは既定で `git fetch` してから読む。fetch しない限り「ローカルの clone が古い」ことは検出できない（remote-tracking ref 自体が古く、比較対象にならない）ため、既定を fetch ありとする。
   - fetch は並列に流す。認証待ちで固まらないよう対話プロンプトを無効化し（`GIT_TERMINAL_PROMPT=0` / ssh は `BatchMode=yes`）、遅い接続や到達不能なホストで止まらないよう HTTP の低速打ち切りと SSH の接続タイムアウト（`ConnectTimeout`）を入れる。利用者が `GIT_SSH_COMMAND` を設定している場合は上書きしない。
   - リモートを持たないローカル専用リポジトリは fetch をスキップする。fetch に失敗しても集計は続行し、失敗したリポジトリを報告する（`fetch_failed`。table では警告行）。
-  - `--no-fetch` で省略できる。即答性が要る用途（`next-action` 等）はこちらを使う。その場合 `repo` の日付はローカルの clone 基準になる。
+  - `--no-fetch` で省略できる。即答性が要る用途（`next-action` 等）はこちらを使う。その場合 `repo` の日付はローカルの clone 基準になる。`ahead_count` も remote-tracking ref 基準なので同じ影響を受ける。
 - `table` の並び順は手を入れる必要が高い順（未反映 → ログが古い/無い → `no-next` → `unclarified`）。日本語の桁揃えには東アジア文字幅を用いる。
 - `table` は PJ 名の前に固定幅の印を出す（`!` 未反映 / `L` remote 未設定 / `^` 未 push コミットあり）。印の有無で桁がずれないよう幅は常に一定とし、端末によって幅の解釈が割れる全角文字は使わない。
 
