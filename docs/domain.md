@@ -15,18 +15,19 @@
 
 ## 1. エンティティ
 
-ドメインは 3 つの実体（`Document` / `Task` / `Log`）と、それらを結ぶ参照 `Ref` からなる。`Date` は `YYYY-MM-DD` の暦日、`Time` は `HH:MM`。各語の現状の Rust 表現は design.md §2 にまとめてある。
+実体は `Document` / `Task` / `Log` の 3 つで、それらを結ぶのが参照 `Ref` である。`Project` は独立した実体ではなく `Document` の役割（§2）、`Observation` は保存されない導出値（§5）なので、この章には現れない。`Date` は `YYYY-MM-DD` の暦日、`Time` は `HH:MM`、`Line` は行番号。各語の現状の Rust 表現は design.md §2 にまとめてある。
 
 ```
 Document                          -- md ファイル 1 つ。一次情報はすべてここにある
   ├ path  : Path                  -- 同一性
   ├ date  : Option<Date>          -- パスから決まる（journal/<Y>/<M>/<YYYY-MM-DD>.md）
   ├ front : Option<FrontMatter>   -- 内容から決まる
-  └ lines : [Line]
+  └ text  : String                -- 本文
 
 When                              -- いつ。粒度が 2 段階ある
   = Day(Date)                     -- 日付だけ決まっている
   | Moment(Date, Time)            -- その日の中の時刻まで決まっている
+    date(w) : Date                -- どちらの場合も日付は取り出せる
 
 Duration                          -- どれくらいかかるか（「45分」「2時間」）
 
@@ -40,7 +41,7 @@ Task                              -- Document 内のチェックボックス行
   ├ at       : (Document, Line)   -- 同一性。どの Document に収容されているかを含む
   ├ status   : Todo | Done | Cancelled
   ├ text     : String
-  ├ refs     : Set<Ref>           -- 参照。§3。Task は Project を知らない
+  ├ refs     : Set<Ref>           -- refs(text)。§3。Task は Project を知らない
   ├ schedule : Option<Schedule>   -- いつやるか・どれくらいかかるか
   ├ contexts : Set<Context>       -- 何が揃えば着手できるか
   └ deadline : Option<Date>       -- いつまでにやるか
@@ -48,12 +49,18 @@ Task                              -- Document 内のチェックボックス行
 Ref                               -- 文中に書かれた参照
   = WikiName(String)              -- [[名前]]
   | Tag(String)                   -- #タグ
+    text(r) : String              -- どちらの場合も包んでいる文字列を取り出せる
+
+refs(s) : Set<Ref>                -- テキスト s に書かれた Ref 全部。Task にも Document にも適用する
 
 Log                               -- 起きたことの記録。文書のどこにでも書ける
   ├ at       : (Document, Line)
   ├ when     : When               -- いつ起きたか。必ず持つ
   ├ duration : Option<Duration>   -- どれくらいかかったか
   └ text     : String
+
+Tasks(d) : Set<Task>              -- Document d に収容された Task 全部（層 1 の逆向き。§3）
+Logs(d)  : Set<Log>               -- 同じく Log 全部
 ```
 
 **「いつ」と「どれくらい」は独立した 2 つの軸である。** 書きたいものは 3 通りあり、どれも書けなければならない — 日付のみ（`Day`）、日付とその日の中の時刻（`Moment`）、かかる長さ（`Duration`）。
@@ -63,12 +70,12 @@ Log                               -- 起きたことの記録。文書のどこ�
 | | 現状 | `When` / `Duration` にすると |
 | --- | --- | --- |
 | 粒度 | `date: String` + `time: Option<Time>` の 2 フィールド。「日付だけ」と「時刻まで」の区別が `Option` の有無に潰れている | 直和なので粒度が構造に現れ、判別が全域になる |
-| 開始終了 | `10:00-11:00` を `time` / `end_time` の 2 フィールドで持つ | `Moment(10:00)` + `Duration(60分)` の**表記**にすぎない。`end_time` は導出値（`when + duration`） |
+| 開始終了 | `10:00-11:00` を `time` / `end_time` の 2 フィールドで持つ | `Moment(d, 10:00)` + `Duration(60分)` の**表記**にすぎない。`end_time` は導出値（`when + duration`） |
 | 所要時間 | 判断メタデータの `（45分）` とログの開始終了に**同じものが 2 箇所**ある。前者はスケジュールに使われず、後者は `list` に出ない | `Duration` 1 つ |
 
 **Task が自分の `when` を持つことが、計画と実績の分離である。** Task が予定の時刻を持たなければ、予定を入れるには配下に Log を書くしかなく、`Log` が「予定の枠」と「起きた時刻」を兼ねてしまう。すると計画列と実績列が同じ時刻セルに乗り、「10:00-11:00 の予定が実際は 10:15-11:20 だった」というずれを表現できない（現状がこの形である — design.md G-11）。
 
-**「判断メタデータ」という概念は無い。** `（45分・@PC）` は行末の括弧に属性を並べて書く**表層構文**（design.md §3）であって、ドメインの概念ではない。括弧という*場所*で定義された概念は、セクションで定義された `next_action` / `backlog`（§2）と同じ category error である。
+**「判断メタデータ」という概念は無い。** `（45分・@PC）` は行末の括弧に属性を並べて書く**表層構文**であって、ドメインの概念ではない（現状の判定規則は design.md §5.4 にあり、目標では同 §3 の文法に退く）。括弧という*場所*で定義された概念は、セクションで定義された `next_action` / `backlog`（§2）と同じ category error である。
 
 Task が持つべき計画上の属性は 3 つである。
 
@@ -86,7 +93,7 @@ Task が持つべき計画上の属性は 3 つである。
 
 **Task の `when` は日付を明示的に書く。** `Document.date` から暗黙に補わない。補うことにすると、PJ ノートに書いた予定が日付を持てなくなる。
 
-Log は例外で、ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`）だけが日付を `# YYYY-MM-DD` 見出しから受け取る。これは表層構文の省略記法であって、できあがる `Log.when` は日付を含んだ `Moment` である（design.md §3）。
+Log は例外で、ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`）だけが日付を `# YYYY-MM-DD` 見出しから受け取る。これは表層構文の省略記法であって、できあがる `Log.when` は日付を含んだ `Moment` である（requirements.md 2.4・design.md §3）。
 
 **Log の Task への帰属は関係であって、Log の属性ではない。**
 
@@ -94,13 +101,13 @@ Log は例外で、ジャーナルのトップレベル時刻メモ（`- HH:MM: 
 attach(log) : Option<Task>        -- インデント厳密大なりで直前のタスクに付く（design.md §4）
 ```
 
-帰属を持たない Log は例外ではなく、3 種類ある。
+帰属を持たない Log は例外ではなく、書かれた場所で 3 種類に分かれる。
 
 | 帰属を持たない Log | 日付の出どころ | 何に使われるか |
 | --- | --- | --- |
-| PJ ノートに書かれた記録 | 行に書かれた日付 | Project の履歴（`log_last`） |
+| PJ ノートの日付行 | 行に書かれた日付 | Project の履歴（§2 の `logs(pj)`） |
 | ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`） | `# YYYY-MM-DD` 見出しから継承 | スケジュール |
-| どのタスクよりも浅い位置に書かれた日付行 | 行に書かれた日付 | 何にも使われない |
+| それ以外の位置に書かれた日付行 | 行に書かれた日付 | 何にも使われない |
 
 **この形にすると `ScheduleEntry` の判別子問題（design.md W-3）が消える。** 現状は「タスク由来か時刻メモ由来か」を `task_text.is_empty()` で判別していて全域でないが、`attach(log)` は `Option` なので全域である。
 
@@ -113,9 +120,9 @@ attach(log) : Option<Task>        -- インデント厳密大なりで直前の�
 
 この 2 つを 1 つの直和（`Journal | Note | Other`）に潰してはならない。潰すと「`journal/` に置いたか」と「`project:` を書いたか」が同じ次元の判定に見えるが、前者はパスの規約、後者はファイルの中身であり、独立に決まる。
 
-**`note/` は概念に登場しない。** 参照の作成先の既定（§4）というだけの規約であって、Document の種類ではない。
+**`note/` は概念に登場しない。** 参照の作成先の既定（requirements.md 3.4）と、PJ ノートの探索範囲の既定（§4）というだけの規約であって、Document の種類ではない。
 
-日付の由来はもう 1 つある — 文書内の `# YYYY-MM-DD` 見出し。これは Document の属性ではなく走査中のカーソル（design.md §4）であり、`Document.date` とは別物として扱う。
+日付の由来はもう 1 つある — 文書内の `# YYYY-MM-DD` 見出し。これは Document の属性ではなく走査中の文脈であり、`Document.date` とは別物として扱う。ここから日付を受け取るのはトップレベル時刻メモだけである（前述）。
 
 ## 2. Project は Document の役割である
 
@@ -155,11 +162,11 @@ Project は Document を所有する別の実体ではなく、**Document の部
 射影はノート**全体**から実体を拾う。見出しで絞り込まない。
 
 ```
-tasks(pj)  = Tasks(pj.note)                              -- ノート内の Task 全部
-logs(pj)   = { l ∈ Logs(pj.note) | attach(l) = None }    -- 帰属しない Log 全部（§1）
+tasks(pj)  = Tasks(pj)                              -- ノート内の Task 全部（§1）
+logs(pj)   = { l ∈ Logs(pj) | attach(l) = None }    -- 帰属しない Log 全部（§1）
 ```
 
-Project がこれらを**所有しているわけではない**。ノートという Document の中にある実体を指しているだけである。
+`pj` に `Tasks` / `Logs` をそのまま適用できるのは、Project が Document だからである（`pj.note` のような所有関係は無い）。Project がこれらを**所有しているわけではない**。ノートという Document の中にある実体を指しているだけである。
 
 **`## 次の予定` / `## オープンタスク` のようなセクションはドメインの構造ではない。** 人が文書を整理するための道具であり、モデルがその見出し文字列に依存してはならない。実体の判定は構文で決まる — `- [ ]` があれば Task、日付があれば Log。それ以外の行は自由記述であって、ドメインには現れない。
 
@@ -174,10 +181,11 @@ Project がこれらを**所有しているわけではない**。ノートと�
 
 ```
 planned(t) = t.schedule ≠ None ∨ t.contexts ≠ ∅ ∨ t.deadline ≠ None    -- §1
+todos(pj)  = { t ∈ tasks(pj) | t.status = Todo }
 
-health(pj) = NoNext      ⟺ #{ t ∈ tasks(pj) | t.status = Todo } = 0
-           | Unclarified ⟺ 未完了 Task はあるが、planned なものが 1 つも無い
-           | Ok          ⟺ planned な未完了 Task がある
+health(pj) = NoNext      ⟺ todos(pj) = ∅
+           | Unclarified ⟺ todos(pj) ≠ ∅ ∧ ∀ t ∈ todos(pj). ¬planned(t)
+           | Ok          ⟺ ∃ t ∈ todos(pj). planned(t)
 ```
 
 計画上の属性は Task が持つので、`taski list` と `taski pj` は同じ抽出を共有する（design.md P4）。「次に何をするか決まっているか」という `health` の意味は変わらないが、属性が構造化されるぶん**何が決まっていないか**まで言えるようになる。`planned` をこの粗さのままにするかは未決である（design.md G-12）。
@@ -200,11 +208,13 @@ Observation(pj) = ジャーナル由来（§5）∪ git 由来 ∪ ファイル�
 | --- | --- | --- |
 | a | Project 本体（`id` / `status`）と射影 | `status` `tasks` `logs` `health` |
 | b | Observation / fs | `repo_abs` |
-| c | Observation / git | `updated` `repo_last` `ahead_count` |
+| c | Observation / git | `updated` `repo_last` `ahead_count` `unreported` |
 | d | Observation / ジャーナル | `journal_last` `journal_work_last` |
-| e | 導出（`today` との差） | `stale_days` `log_days` `unreported` |
+| e | 導出（`today` との差） | `stale_days` `log_days` `journal_days` |
 
 現状の a 層にはこれに加えて `next_action` / `backlog` が含まれる。目標では消える（design.md G-10）。
+
+`unreported` だけは層に収まりが悪い。`repo_last`（c）と `log_last`（a）の比較なので観測そのものではなく、`today` との差でもないので e でもない。出力上は c 層に置いてある（design.md §5.6）。
 
 **定義と観測の分離は design.md P3（事実と判断を分ける）の 1 つ下の層にある規律である。** 定義はノートを書き換えれば変わる。観測は世界を見に行かないと変わらない。両者を 1 つの構造体に平坦化するのは出力の都合であって、概念としては別に扱う。
 
@@ -214,9 +224,9 @@ Observation(pj) = ジャーナル由来（§5）∪ git 由来 ∪ ファイル�
 
 | 層 | 関係 | 意味 | 現状の実装 |
 | --- | --- | --- | --- |
-| 1 | Task → Document | **収容**。どの文書に書かれているか。`task.at` の一部であり、独立した関係ではなく同一性そのもの | `FileInput.file_uri` + `line` |
+| 1 | Task → Document | **収容**。どの文書に書かれているか。`task.at` の一部であり、独立した関係ではなく同一性そのもの | `FileInput.file_uri` + `ParsedTask.line` |
 | 2 | Task → Ref | **参照**。行から `[[名前]]` / `#タグ` を抽出する | `pj::collect_refs` |
-| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve_wiki_link` |
+| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve_wiki_link` と `refs.contains` の 2 系統（design.md G-5） |
 | 4 | Document → Project | **役割**。`front.project` を持つか（§2） | `parse_front_matter` |
 
 PJ 軸はこの合成として導出する。
@@ -226,15 +236,17 @@ docs(task)     = { task.at.0 } ∪ { d | r ∈ task.refs, resolve(r) = Some(d) }
 projects(task) = { d ∈ docs(task) | d ∈ Project }                              -- 層 4
 ```
 
+`resolve` は §4 で定める解決関数で、ここでは探索範囲の引数を省いて書いている。
+
 1 つの Task が複数の Project に属してよい（N:M）。
 
 **層を分ける理由は、PJ を経由しないビューが実在するからである。** タグ別ビューは層 1・2 だけで成立する。
 
 ```
-tags(task) = { r ∈ task.refs | r は Tag } ∪ { name(task.at.0) }
+tags(task) = { text(r) | r ∈ task.refs, r は Tag } ∪ { match_key(stem(task.at.0.path)) }
 ```
 
-これは `extract_tags` と `extract_file_tags` の合成そのもので、Project の概念を一切要求しない。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**（実際に分裂しているのは層 3 だけ — design.md G-5）
+これは `extract_tags` と `extract_file_tags` の和そのもので、Project の概念を一切要求しない（`stem` はファイル名から拡張子を落としたもの、`match_key` は空白を `_` に置換する照合キー — どちらも §4）。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**（実際に分裂しているのは層 3 だけ — design.md G-5）
 
 **層をまたいだ依存を持ち込まない。** 現状の `extract_file_tags` は層 1 のタグ導出でありながら `project: active` を条件にしており、層 4 の情報を見ている。「どの PJ か」（事実）に「表示するか」（判断）が混入した形である。タグ導出は層 1・2 で完結させ、`status` による絞り込みは表示側の責務とする（design.md G-1）。
 
@@ -254,8 +266,8 @@ Project の正規名 `PjId` はノートのファイル名（拡張子を除い�
 したがって照合は正規形どうしの比較ではなく、**照合キー**を経由する。
 
 ```
-match_key(s) = s の空白を "_" に置換したもの
-pj ∋ ref  ⟺  match_key(id(pj)) = match_key(ref)
+match_key(s)  = s の空白を "_" に置換したもの
+hits(pj, r)  ⟺ match_key(id(pj)) = match_key(text(r))     -- r : Ref。「r は pj を指す」
 ```
 
 `match_key` は単射ではない（`在庫 管理` と `在庫_管理` が衝突する）。これは `#タグ` に空白を書けないという表層構文の制約から来る本質的な非可逆性なので、**衝突を禁止する側で解く**。すなわち PJ ノートの `match_key` は一意でなければならない。こう決めると曖昧さが「黙って片方を採る」ではなく「入力が不正」として表面化する。
@@ -263,7 +275,7 @@ pj ∋ ref  ⟺  match_key(id(pj)) = match_key(ref)
 **参照の解決は 1 つの関数に集約する。**
 
 ```
-resolve(ref, docs) : Option<Document>
+resolve(ref, D) : Option<Document>        -- D は探索対象の Document 集合
 ```
 
 Wiki リンクを開く時と PJ を照合する時で、同じ `resolve` を通す。Project かどうかは、解決した Document の `front` を見て決める。この形にすると「`note/` 直下にあるか」は概念から消え、探索範囲の設定という実装事項に退く（現状は 2 系統に分かれている — design.md G-5）。
@@ -273,24 +285,27 @@ Wiki リンクを開く時と PJ を照合する時で、同じ `resolve` を通
 ジャーナル由来の観測は、ジャーナルを直接読むのではなく **Task 集合からの導出**として定義する。
 
 ```
-Journals = { d ∈ Document | d.date ≠ None }
-hits(pj, R) = ∃ r ∈ R. match_key(id(pj)) = match_key(text(r))     -- §4
+Journals    = { d ∈ Document | d.date ≠ None }
+hits(pj, R) = ∃ r ∈ R. hits(pj, r)                                -- §4 の hits を集合に持ち上げたもの
+max ∅       = ⊥                                                   -- 観測なし（出力では null）
 
-mention(pj) = max { d.date | d ∈ Journals, hits(pj, refs(d の全文)) }
+mention(pj) = max { d.date | d ∈ Journals, hits(pj, refs(d.text)) }
 work(pj)    = max { w      | d ∈ Journals, t ∈ Tasks(d), hits(pj, t.refs), w ∈ worked(t) }
 
 logs(t)     = { l ∈ Log | attach(l) = Some(t) }                   -- §1
-worked(t)   = { d.date | t.status = Done }
+worked(t)   = { t.at.0.date | t.status = Done, t.at.0.date ≠ None }   -- 収容先 Document の日付
             ∪ { date(log.when) | log ∈ logs(t), log.when が Moment }
 ```
 
+出力では `mention(pj)` が `journal_last`、`work(pj)` が `journal_work_last` になる（§2 の d 層）。
+
 - `Day` のログは実働にしない（`Moment` だけを見る）。ジャーナルでは「やった記録」ではなく予定・メモとしても日付行が書かれるため。**ただしこの規則の根拠は、Task が `schedule` を持つと消える。** 予定が Task 側に移れば Log は常に記録になるので、`Day` を実働に含めるかどうかは改めて決めることになる（design.md G-11）。
 - `max` を採る（走査順に依存させない）。時刻付きログは自分の日付を持つので、新しいジャーナルに前日ぶんを書き足せる。
-- 観測範囲を `Journals` に限る。Project ノート自身の `## ログ` は `log_last` が担当する別の観測である。
+- 観測範囲を `Journals` に限る。Project ノート自身に書かれた Log はここには入らない。あれは観測ではなく射影（§2 の `logs(pj)`）であり、別の道筋で拾う。
 
 **両者とも §3 の層 2（参照）だけを使い、層 1（収容）にも層 4（役割）にも触れない。** 違いは参照を集める範囲だけで、言及は文書全体、実働はタスク行に限る。
 
-**この定義のもとで「実働 ⊆ 言及」は定理になる。** タスク行は文書の一部なので `t.refs ⊆ refs(d の全文)`、したがって `hits(pj, t.refs) ⟹ hits(pj, refs(d の全文))`、すなわち `work(pj) ≠ ⊥ ⟹ mention(pj) ≠ ⊥`。集合の包含から従うだけで、PJ の概念も収容経路も出てこない。現状はこれを**規律**（両者で同じ `collect_refs` を呼ぶ）で守っており、破れうるので design.md I-17 に不変条件として書いてある。導出に直せば規律が不要になる（design.md G-4）。
+**この定義のもとで「実働 ⊆ 言及」は定理になる。** タスク行は文書の一部なので `t.refs ⊆ refs(d.text)`、したがって `hits(pj, t.refs) ⟹ hits(pj, refs(d.text))`、すなわち `work(pj) ≠ ⊥ ⟹ mention(pj) ≠ ⊥`。集合の包含から従うだけで、PJ の概念も収容経路も出てこない。現状はこれを**規律**（両者で同じ `collect_refs` を呼ぶ）で守っており、破れうるので design.md I-17 に不変条件として書いてある。導出に直せば規律が不要になる（design.md G-4）。
 
 ## 6. 全体図
 
@@ -326,13 +341,14 @@ erDiagram
         Status status "active / someday / done（完了日を含む）"
     }
     LOG {
+        Location at PK "Document と行番号"
         When when "Day か Moment。実働判定は Moment だけ"
         Duration duration "どれくらいかかったか（任意）"
         String text "本文"
     }
     OBSERVATION {
-        Date mention_last "ジャーナル由来"
-        Date work_last "ジャーナル由来"
+        Date journal_last "ジャーナル由来。§5 の mention"
+        Date journal_work_last "ジャーナル由来。§5 の work"
         Date repo_last "git 由来"
         Path repo_abs "fs 由来"
     }
@@ -340,8 +356,9 @@ erDiagram
 
 読み方:
 
-- **`TASK` から `PROJECT` への辺は無い。** 層 2 → 3 → 4 を辿って初めて届く（§3）。タグ別ビューは層 2 で止まるので、この図の右半分を必要としない。
-- **`LOG` の親は 2 つある。** 収容（必ず 1 つの `DOCUMENT` にある）と帰属（`TASK` に付くとは限らない）で、後者が `0..1` であることが重要である（§1）。PJ ノートの `## ログ` は帰属を持たない `LOG` で、`PROJECT` が所有しているのではなくセクションで絞り込んで指しているだけである（§2）。
-- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2）。`DOCUMENT` から出る辺が 3 本（層 1・層 4・`LOG` の収容）あるのはそのためで、層 3 の解決先として戻ってくる辺も同じ `DOCUMENT` である。
+- **`TASK` から `PROJECT` への辺は無い。** 層 2 → 3 → 4 を辿って初めて届く（§3）。タグ別ビューは層 1・2 で止まるので、`PROJECT` と `OBSERVATION` の箱を必要としない。
+- **`LOG` の親は 2 つある。** 収容（必ず 1 つの `DOCUMENT` にある）と帰属（`TASK` に付くとは限らない）で、後者が `0..1` であることが重要である（§1）。PJ ノートに書かれた記録は帰属を持たない `LOG` で、`PROJECT` が所有しているのではなく、ノートという `DOCUMENT` に収容された `LOG` のうち帰属しないものを指しているだけである（§2）。
+- **`REF` が `TASK` からしか生えていないのは、この図が層 2 を描いているからである。** §5 の言及（`mention`）はタスク行に限らず文書全体の `refs(d.text)` を見るので、自由記述に書かれた `[[名前]]` もそこに入る。`t.refs ⊆ refs(d.text)` という包含が「実働 ⊆ 言及」の根拠である（§5）。
+- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2）。`DOCUMENT → PROJECT` が `0..1` なのはそのためで、層 3 の解決先として戻ってくる辺も、`PROJECT` の箱ではなく `DOCUMENT` に着く。
 - **`PROJECT` が 2 属性しか持たないことが重要である**（§2）。`next_action` や `backlog` が無いのは省略ではなく、セクション名に依存する射影をドメインから外した結果である。`tasks(pj)` / `logs(pj)` は図の上では `DOCUMENT → TASK` / `DOCUMENT → LOG` の辺をそのまま辿るだけで、`PROJECT` から生える辺は無い。
 - `OBSERVATION` も保存される実体ではなく、実行のたびに世界を見て作られる値である。`PROJECT` とは「概念としては別だが、出力では 1 つの構造体に平坦化される」関係にある。
