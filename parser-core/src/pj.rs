@@ -806,6 +806,20 @@ mod tests {
     }
 
     #[test]
+    fn test_journal_work_cancelled_task_with_timed_log_is_work() {
+        // 見送りでも配下に時刻付きログがあれば実働。着手した時間の記録が
+        // 残っている以上、チェックボックスの最終状態だけで捨ててはならない
+        let l = lines(&[
+            "# 2026-08-01",
+            "- [-] [[在庫管理]] を進める",
+            "  - 2026-08-01 10:00: 30分触ってやめた",
+        ]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0].date, "2026-08-01");
+    }
+
+    #[test]
     fn test_journal_work_by_tag() {
         let l = lines(&["# 2026-08-01", "- [x] カードを作る #永夜"]);
         let works = journal_work(&l, "2026-08-01");

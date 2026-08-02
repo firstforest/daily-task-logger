@@ -77,6 +77,27 @@ State = { in_code : bool
 TaskCtx = { indent : Indent, status : TaskStatus, text : String, line : Line, context : Vec<String> }
 ```
 
+`in_code` と `current` は**直交する**。フェンス行は `in_code` を反転させるだけで `current` を捨てないので、タスクの配下にコードブロックを挟んでもログの帰属は切れない。
+
+```mermaid
+stateDiagram-v2
+    state "行走査の状態（2 つの軸は直交する）" as Scan {
+        [*] --> Body
+        Body : in_code = false（本文・解析対象）
+        Code : in_code = true（すべて無視）
+        Body --> Code : fence 行
+        Code --> Body : fence 行
+        --
+        [*] --> NoCtx
+        NoCtx : current = None（タスク文脈なし）
+        InCtx : current = Some（indent と本文を保持）
+        NoCtx --> InCtx : task 行
+        InCtx --> InCtx : task 行（文脈を差し替え）
+        InCtx --> NoCtx : 参照を持たない task 行（強い帰属のみ）
+        InCtx --> NoCtx : インデントがタスク以下の非空行（強い帰属のみ）
+    }
+```
+
 遷移規則（上から順に最初に一致したものを適用する）:
 
 | # | 入力行 | 遷移 |
@@ -96,6 +117,28 @@ TaskCtx = { indent : Indent, status : TaskStatus, text : String, line : Line, co
 `≥` ではなく `>`（厳密大なり）である点も規則として固定である。同じインデントの `- 2026-08-02: ...` はタスクの兄弟であってログではない。
 
 ## 5. Rust ドメインモデル
+
+型の全体像と、P1・P2 が引いている純粋／副作用の境界:
+
+```mermaid
+flowchart TB
+    subgraph core["parser-core — 純粋・全域（fs / git / 時刻に触れない）"]
+        L["行の列（lines）"]
+        L --> A1["parse_all_dates_internal"] --> T1["ParsedTaskWithDate"] --> B1["build_tree_data_internal"] --> T5["TreeDateGroup<br/>→ TreeFileGroup<br/>→ TreeTaskData"]
+        L --> A2["build_schedule_data_internal"] --> T2["ScheduleEntry"]
+        L --> A5["parse_front_matter"] --> T6["FrontMatterParsed"]
+        L --> A3["parse_pj_note"] --> T3["PjNote<br/>→ PjLogEntry"]
+        L --> A4["journal_work"] --> T4["JournalWork"]
+    end
+
+    T5 --> UI["VS Code TreeView / taski list / taski schedule"]
+    T2 --> UI
+    T6 --> AGG["cli::pj の集約（fs 走査・git・ネットワーク）<br/>→ PjProject（§5.6）"]
+    T3 --> AGG
+    T4 --> AGG
+```
+
+`parser-core` 側の矢印はすべて**関数適用**であり、外部状態を経由しない。`cli` 側の箱だけがファイルシステム・git・ネットワークに触れる。基準日（`today`）もこの境界を越えて引数として渡される。
 
 ### 5.1 状態の代数
 
@@ -215,7 +258,18 @@ struct PjNote {
 | `## ログ` | `- YYYY-MM-DD: …` | `extract_logs` | `logs` |
 | `## オープンタスク` | `- …`（チェックボックスなし） | `extract_backlog` | `backlog` |
 
-`extract_next_action` が採るのは**マーカーが `" "` で本文が空でない最初の行**だけである。`- [x]` / `- [-]` しか無い（＝終わったが次を決めていない）状態も、セクションごと無い状態も、等しく `next_action = None` すなわち `health = NoNext` に落ちる。
+`extract_next_action` が採るのは**マーカーが `" "` で本文が空でない最初の行**だけである。`- [x]` / `- [-]` しか無い（＝終わったが次を決めていない）状態も、セクションごと無い状態も、等しく `next_action = None` すなわち `health = NoNext` に落ちる。`health` はこの判定と判断メタデータの有無だけで決まる（I-11）。
+
+```mermaid
+flowchart TD
+    S["次の予定セクション"] --> Q1{"マーカーが空白で<br/>本文が空でない行があるか"}
+    Q1 -- "無い（セクション欠落・完了済みのみ）" --> H1["health = NoNext"]
+    Q1 -- "ある" --> Q2{"行末に判断メタデータがあるか<br/>split_decision_meta"}
+    Q2 -- "無い" --> H2["health = Unclarified"]
+    Q2 -- "ある" --> H3["health = Ok"]
+```
+
+`next_action_ai` は同じメタデータに `@AI` が含まれるかどうかで別に決まる。メタデータが無ければ常に `false`（I-13）。
 
 判断メタデータの分離は次の述語で定義される。行末の括弧の中身を `・, 、 ，` で分割し、**いずれか 1 要素**が下の書式に一致するときだけメタデータと見なす。
 
@@ -250,11 +304,45 @@ journal_work(L, d₀) = { (d₀, R) | 完了タスク行 T ∈ L, R = collect_re
                                    時刻付きログ行 G が T の配下（強い帰属）, d = date(G) }
 ```
 
-`Cancelled`（着手せず）は実働に含めない。時刻の**ない**ログも含めない。ジャーナルでは時刻なしログが予定・メモとしても書かれるため、含めると言及と区別がつかなくなる。
+```mermaid
+flowchart TD
+    T["journal のタスク行"] --> R{"collect_refs が空でないか"}
+    R -- "空" --> X["実働でない<br/>（タスク文脈も閉じる）"]
+    R -- "参照あり" --> C{"マーカー"}
+    C -- "完了" --> W1["実働 = journal のファイル日付"]
+    W1 --> D{"より深いインデントの<br/>時刻付きログが配下にあるか"}
+    C -- "未完了・見送り" --> D
+    D -- "あり" --> W2["実働 = そのログ行の日付<br/>（複数ログなら複数件）"]
+    D -- "なし" --> E["これ以上の実働なし"]
+```
+
+**2 つの枝は独立で、両方を満たすタスク行は 2 件の実働を生む。** マーカーが効くのは 1 つ目の枝だけである。したがって `Cancelled`（見送り）はそれ自体では実働にならないが、**配下に時刻付きログがあれば 2 つ目の枝で実働になる**。着手した時間の記録が残っている以上、チェックボックスの最終状態だけを見て捨てるのは誤りだからである（`test_journal_work_cancelled_task_with_timed_log_is_work`）。
+
+時刻の**ない**ログはどちらの枝にも入らない。ジャーナルでは時刻なしログが予定・メモとしても書かれるため、含めると言及と区別がつかなくなる。
 
 ### 5.6 PJ 集約（`cli::pj`）
 
-`PjProject` は `PjNote`（純粋）と外部世界の観測（git・ジャーナル・ファイルシステム）の合成である。フィールドは由来ごとに 5 つの層に分かれる。
+`PjProject` は `PjNote`（純粋）と外部世界の観測（git・ジャーナル・ファイルシステム）の合成である。
+
+```mermaid
+flowchart LR
+    N["note/PJ名.md"] --> FM["parse_front_matter<br/>project / repo / completed"]
+    N --> PN["parse_pj_note<br/>next_action / logs / backlog"]
+    JR["journal/年/月/日付.md"] --> JD["journal_dates<br/>言及 mention / 実働 work"]
+    RP["repo: のリポジトリ"] --> FE["fetch_repos"] --> RI["repo_info<br/>repo_last / unreported / ahead"]
+    RP --> AB["repo_abs_path<br/>~ 展開 + 実パス解決"]
+    TK["taski リポジトリ"] --> NU["note_last_updated<br/>updated"]
+
+    FM --> P["PjProject"]
+    PN --> P
+    JD --> P
+    RI --> P
+    AB --> P
+    NU --> P
+    P --> DY["stale_days / log_days / repo_days<br/>journal_days / journal_work_days<br/>= today − 各日付"]
+```
+
+フィールドは由来ごとに 5 つの層に分かれる。
 
 ```rust
 struct PjProject {
@@ -395,11 +483,19 @@ struct PjOutput { generated: String, fetched: bool, fetch_failed: Vec<String>, p
 
 タスクの状態はトグルで巡回する。VS Code の `taski.toggleTask` と CLI の `taski toggle` は同じ巡回を実装する。
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Incomplete
+    Incomplete : Incomplete（マーカー = 半角空白）
+    Completed : Completed（マーカー = x）
+    Cancelled : Cancelled（マーカー = ハイフン）
+    Incomplete --> Completed : toggle
+    Completed --> Cancelled : toggle
+    Cancelled --> Incomplete : toggle
 ```
-   [ ] ──→ [x] ──→ [-] ──┐
-    ↑                     │
-    └─────────────────────┘
-```
+
+3 状態の巡回なので、トグルは 3 回で恒等写像に戻る。マーカー以外（インデント・本文・行内の位置）は保存する。
 
 `PjHealth` は遷移ではなく格子である。`NoNext ⊑ Unclarified ⊑ Ok` は「ノートに書かれた情報量」の順序であり、I-11 のとおり `(next_action, next_action_meta)` の有無から毎回計算される。状態として保持されないので、ノートを書き換えれば次の実行で必ず追随する。
 
