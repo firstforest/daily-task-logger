@@ -1,6 +1,6 @@
 # taski アーキテクチャ
 
-本ドキュメントは taski の構成・設計方針をまとめたものである。要求そのものは [requirements.md](requirements.md) を、各クレートが持つ型・不変条件は [design.md](design.md) を参照。
+本ドキュメントは taski の構成・設計方針をまとめたものである。要求そのものは [requirements.md](requirements.md) を、ドメインモデル（目標形）は [domain.md](domain.md) を、各クレートが持つ型・不変条件は [design.md](design.md) を参照。
 
 ## 全体構成
 

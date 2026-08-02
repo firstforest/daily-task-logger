@@ -2,7 +2,7 @@
 
 本ドキュメントは、現状の実装とドキュメント（`CLAUDE.md`、`docs/superpowers/` 配下の設計資料、`package.json`、Rust パーサー）から、taski に対する要求を整理したものである。実装の現状を反映した「あるべき仕様」の記述であり、個々の実装詳細ではなく満たすべき要件を示す。
 
-構成・設計方針については [architecture.md](architecture.md) を、ここでの要求を Rust の型・不変条件として表した結果については [design.md](design.md) を参照。
+構成・設計方針については [architecture.md](architecture.md) を、ここでの要求の背後にあるドメインモデル（目標形）については [domain.md](domain.md) を、それを Rust の型・不変条件として表した結果については [design.md](design.md) を参照。
 
 ## 1. 概要・目的
 

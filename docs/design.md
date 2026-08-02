@@ -1,400 +1,65 @@
-# taski 設計 — ドメインモデル
+# taski 設計 — 現状の実装
 
-本ドキュメントは taski のドメインを形式的に記述する。
+本ドキュメントは taski の実装を形式的に記述する。
 
 - **[requirements.md](requirements.md)** — *何を* 満たすか（要求）
 - **[architecture.md](architecture.md)** — *どこに* 置くか（クレート構成・パイプライン・ビルド）
-- **本ドキュメント** — *どう表すか*（概念・型・不変条件・写像・事前条件）
+- **[domain.md](domain.md)** — *何が何であるか*（ドメインモデル。目標形）
+- **本ドキュメント** — *どう表しているか*（型・構文・不変条件・写像）
 
-要求の根拠（なぜその仕様なのか）は requirements.md 側にある。ここでは要求を型と述語に落とした結果だけを扱い、根拠は重複させない。
+要求の根拠（なぜその仕様なのか）は requirements.md 側に、ドメインの目標形は domain.md 側にある。ここでは要求と概念を型と述語に落とした結果だけを扱い、根拠は重複させない。
 
-**目標と現状を分けて書く。**
+**本ドキュメントは現状を書く。** 「ドメインに何があり、どう関係するか」は domain.md が持ち、ここには実装されているものだけを置く。
 
 | 章 | 立場 |
 | --- | --- |
-| §2 概念モデル | **目標形。** ドメインに何があり、どう関係するか |
-| §3〜§9 | **現状。** 実装されている構文・走査・型・不変条件・写像 |
-| §10 既知の弱さ | 型で守れていないが、そう決めたもの（W-*） |
-| §11 移行課題 | 概念とずれているので、いずれ直すもの（G-*） |
+| §1 設計原則 | 実装が従う規律（P-*） |
+| §2〜§8 | **現状。** 実装されている語彙・構文・走査・型・不変条件・写像 |
+| §9 既知の弱さ | 型で守れていないが、そう決めたもの（W-*） |
+| §10 移行課題 | domain.md の概念とずれているので、いずれ直すもの（G-*） |
+| §11 拡張の指針 | 触るときの制約 |
 
-§2 だけが実装より先を書いている。現状の記述（§3 以降）と食い違う箇所は、すべて §11 に対応する G-* がある。
+domain.md と食い違う箇所には、すべて §10 に対応する G-* がある。
 
 ## 1. 設計原則
 
 **P1. 解析は全域かつ純粋な写像である。**
-`parser-core` は入力 `Vec<String>`（行の列）から出力データ構造への写像だけを担う。ファイルシステム・git・時刻・環境変数に触れない。任意の入力に対して停止し、パニックせず、値を返す（例外は §8 の事前条件のみ）。これにより VS Code 拡張（WASM 経由）と CLI（直接リンク）で同じ入力から同じ出力が出ることが型レベルで保証される。
+`parser-core` は入力 `Vec<String>`（行の列）から出力データ構造への写像だけを担う。ファイルシステム・git・時刻・環境変数に触れない。任意の入力に対して停止し、パニックせず、値を返す（例外は §7 の事前条件のみ）。これにより VS Code 拡張（WASM 経由）と CLI（直接リンク）で同じ入力から同じ出力が出ることが型レベルで保証される。
 
 **P2. 副作用は `cli` に閉じる。**
 git の呼び出し・ディレクトリ走査・並列 fetch・現在日付の取得は `cli/src/pj.rs` に置く。`parser-core` の関数は「基準日」「ファイルの日付」を **引数で受け取る**（`journal_work(lines, file_date)`, `build_tree_data_internal(files, today_str)`）。テストが時刻に依存しないのはこの分割の帰結である。
 
 **P3. 事実と判断を型で分ける。**
-`PjProject` が持つのは機械的に決まる事実（日付・件数・有無）だけで、「着手すべきか」「粒度が粗いか」は含めない。唯一の例外が `PjHealth` で、これは §7 I-11 のとおり他フィールドから決定的に導出される要約であり、独立した判断ではない。
+`PjProject` が持つのは機械的に決まる事実（日付・件数・有無）だけで、「着手すべきか」「粒度が粗いか」は含めない。唯一の例外が `PjHealth` で、これは I-11 のとおり他フィールドから決定的に導出される要約であり、独立した判断ではない。
 
 **P4. 同じ概念は 1 つの関数から出す。**
-参照の抽出（`collect_refs`）、判断メタデータの分離（`split_decision_meta`）は言及側・実働側・`list` 側で同一の関数を共有する。片方だけが表記の揺れを拾うと、§7 I-17 のような不変条件が壊れる。
+参照の抽出（`collect_refs`）、判断メタデータの分離（`split_decision_meta`）は言及側・実働側・`list` 側で同一の関数を共有する。片方だけが表記の揺れを拾うと、I-17 のような不変条件が壊れる。
 
 **P5. 境界（WASM / JSON）を通る型は素直な表現に寄せる。**
-`serde` の既定表現で往復できることを優先し、newtype やタグ付き列挙を境界型には持ち込まない。その代償として本来は直和である概念が「フラットな構造体＋空文字列の判別子」に潰れている箇所がある（§6.3・§10）。潰した箇所は必ず本ドキュメントで代数的な形を併記する。
+`serde` の既定表現で往復できることを優先し、newtype やタグ付き列挙を境界型には持ち込まない。その代償として本来は直和である概念が「フラットな構造体＋空文字列の判別子」に潰れている箇所がある（§5.3・§9）。潰した箇所は必ず本ドキュメントで代数的な形を併記する。
 
-## 2. 概念モデル（目標形）
+## 2. ドメインの語彙
 
-この章は **taski のドメインがどうあるべきか** を書く。現状の Rust の型（§6）とは一致しない箇所があり、差分は §11 に移行課題として列挙する。実装より先に「何が何であるか」を固定するために置いている。
-
-### 2.1 エンティティ
-
-ドメインは 3 つの実体（`Document` / `Task` / `Log`）と、それらを結ぶ参照 `Ref` からなる。
-
-```
-Document                          -- md ファイル 1 つ。一次情報はすべてここにある
-  ├ path  : Path                  -- 同一性
-  ├ date  : Option<Date>          -- パスから決まる（journal/<Y>/<M>/<YYYY-MM-DD>.md）
-  ├ front : Option<FrontMatter>   -- 内容から決まる
-  └ lines : [Line]
-
-When                              -- いつ。粒度が 2 段階ある
-  = Day(Date)                     -- 日付だけ決まっている
-  | Moment(Date, Time)            -- その日の中の時刻まで決まっている
-
-Duration                          -- どれくらいかかるか（「45分」「2時間」）
-
-Schedule                          -- いつ・どれくらい。少なくとも一方を持つ
-  ├ when     : Option<When>
-  └ duration : Option<Duration>
-
-Context = String                  -- @ に続く文字列。閉じた集合ではない
-
-Task                              -- Document 内のチェックボックス行
-  ├ at       : (Document, Line)   -- 同一性。どの Document に収容されているかを含む
-  ├ status   : Todo | Done | Cancelled
-  ├ text     : String
-  ├ refs     : Set<Ref>           -- 参照。§2.3。Task は Project を知らない
-  ├ schedule : Option<Schedule>   -- いつやるか・どれくらいかかるか
-  ├ contexts : Set<Context>       -- 何が揃えば着手できるか
-  └ deadline : Option<Date>       -- いつまでにやるか
-
-Ref                               -- 文中に書かれた参照
-  = WikiName(String)              -- [[名前]]
-  | Tag(String)                   -- #タグ
-
-Log                               -- 起きたことの記録。文書のどこにでも書ける
-  ├ at       : (Document, Line)
-  ├ when     : When               -- いつ起きたか。必ず持つ
-  ├ duration : Option<Duration>   -- どれくらいかかったか
-  └ text     : String
-```
-
-**「いつ」と「どれくらい」は独立した 2 つの軸である。** 書きたいものは 3 通りあり、どれも書けなければならない — 日付のみ（`Day`）、日付とその日の中の時刻（`Moment`）、かかる長さ（`Duration`）。
-
-この形にすると 3 つのことが同時に片付く。
-
-| | 現状 | `When` / `Duration` にすると |
-| --- | --- | --- |
-| 粒度 | `date: String` + `time: Option<Time>` の 2 フィールド。「日付だけ」と「時刻まで」の区別が `Option` の有無に潰れている | 直和なので粒度が構造に現れ、判別が全域になる |
-| 開始終了 | `10:00-11:00` を `time` / `end_time` の 2 フィールドで持つ | `Moment(10:00)` + `Duration(60分)` の**表記**にすぎない。`end_time` は導出値（`when + duration`） |
-| 所要時間 | 判断メタデータの `（45分）` とログの開始終了に**同じものが 2 箇所**ある。前者はスケジュールに使われず、後者は `list` に出ない | `Duration` 1 つ |
-
-**Task が自分の `when` を持つことが、計画と実績の分離である。** 現状 Task は時刻を持たず、予定を入れるにも配下に Log を書くしかない。結果 `Log` が「予定の枠」と「起きた時刻」を兼ね、スケジュールグリッドは計画列と実績列を**同じ時刻セルに置かざるを得ない**（`plan-cell` はタスク本文、`actual-cell` はログ本文で、行が置かれる時刻はログ由来）。「10:00-11:00 の予定が実際は 10:15-11:20 だった」というずれが表現できないのはこのためである（§11 G-11）。
-
-**「判断メタデータ」という概念は無い。** `（45分・@PC）` は行末の括弧に属性を並べて書く**表層構文**（§4）であって、ドメインの概念ではない。括弧という*場所*で定義された概念は、セクションで定義された `next_action` / `backlog`（§2.2）と同じ category error である。
-
-Task が持つべき計画上の属性は 3 つである。
-
-| 属性 | 何を表すか | 現在の書き方 |
-| --- | --- | --- |
-| `schedule` | **いつやるか・どれくらいかかるか。** `when` は日だけ（`Day`）と時刻まで（`Moment`）の 2 段階 | 所要時間は `45分`。いつやるかは配下の日付行（§11 G-11） |
-| `contexts` | **何が揃えば着手できるか。** ユーザーが自由に増やせるので閉じた集合ではない | `@PC` `@AI` `@家` |
-| `deadline` | **いつまでにやるか。** `schedule` とは別の軸である（いつやるかと、いつまでにやるか） | `08-15` `締切08-15` |
-
-`schedule` の 2 つの成分はどちらも任意である。「45 分かかるが、いつやるかは未定」も「8/1 にやるが、どれくらいかは未定」も普通に書きたい。両方とも無いなら `schedule` を持たない。
-
-**重さ（`軽` / `重`）は持たない。** 現状の `is_meta_element` は認識するが、ドメインの属性にはしない。
-
-**構造を捨てているために再パースが起きている。** 現状の `split_decision_meta` は中身を要素に分けて「メタデータらしいか」を判定するが、判定が済むと**分解結果を捨てて文字列のまま返す**。そのため `next_action_ai`（`@AI` が付いているか）は返ってきた文字列を同じ区切り文字でもう一度分割している。属性として持てば、この再パースも `next_action_ai` というフィールド自体も要らない（§11 G-12）。
-
-さらに、**所要時間と締切は現状「メタデータらしさ」の判定にしか使われておらず、値として解釈されていない**。`duration_re` / `deadline_re` はどちらも `is_meta_element` からしか呼ばれず、`45分` も `08-15` も `meta` 文字列に入って表示されるだけである。属性にするのは整理ではなく機能の追加になる。
-
-**Task の `when` は日付を明示的に書く。** `Document.date` から暗黙に補わない。補うことにすると、PJ ノートに書いた予定が日付を持てなくなる。
-
-Log は例外で、ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`）だけが日付を `# YYYY-MM-DD` 見出しから受け取る。これは表層構文の省略記法であって、できあがる `Log.when` は日付を含んだ `Moment` である（§4）。
-
-**Log の Task への帰属は関係であって、Log の属性ではない。**
-
-```
-attach(log) : Option<Task>        -- インデント厳密大なりで直前のタスクに付く（§5）
-```
-
-帰属を持たない Log は例外ではなく、3 種類ある。
-
-| 帰属を持たない Log | 日付の出どころ | 何に使われるか |
-| --- | --- | --- |
-| PJ ノートに書かれた記録 | 行に書かれた日付 | Project の履歴（`log_last`） |
-| ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`） | `# YYYY-MM-DD` 見出しから継承 | スケジュール |
-| どのタスクよりも浅い位置に書かれた日付行 | 行に書かれた日付 | 何にも使われない |
-
-**この形にすると `ScheduleEntry` の判別子問題（§10 W-3）が消える。** 現状は「タスク由来か時刻メモ由来か」を `task_text.is_empty()` で判別していて全域でないが、`attach(log)` は `Option` なので全域である。
-
-**Document の性質は独立した 2 つの軸で決まる。**
-
-| 軸 | 由来 | 与えるもの |
-| --- | --- | --- |
-| `date` | **パス**が `journal/**/<YYYY-MM-DD>.md` に一致するか | その Document に書かれた記録の既定の日付 |
-| `front` | **内容**（先頭の YAML front matter） | PJ かどうか（§2.2）、`repo` / `completed` |
-
-この 2 つを 1 つの直和（`Journal | Note | Other`）に潰してはならない。潰すと「`journal/` に置いたか」と「`project:` を書いたか」が同じ次元の判定に見えるが、前者はパスの規約、後者はファイルの中身であり、独立に決まる。
-
-**`note/` は概念に登場しない。** 参照の作成先の既定（§2.4）というだけの規約であって、Document の種類ではない。
-
-日付の由来はもう 1 つある — 文書内の `# YYYY-MM-DD` 見出し。これは Document の属性ではなく走査中のカーソル（§5）であり、`Document.date` とは別物として扱う。
-
-### 2.2 Project は Document の役割である
-
-**Project が本質的に持つのは、同一性と関与の状態だけである。**
-
-```
-Project ⊂ Document
-  条件: front.project ≠ None
-  ├ id     : PjId = path.file_stem()                 -- 同一性
-  └ status : Active | Someday | Done(Option<Date>)   -- 関与の状態
-```
-
-Project は Document を所有する別の実体ではなく、**Document の部分集合**である。「ノートを持つ」のではなく「ノートである」。
-
-`PjNote` / `PjProject` が持つ残りのフィールドは、すべて次の 3 つのどれかに落ちる。判定基準は**捨てて作り直せるか**である。
-
-| 種別 | 作り直す元 | 変わる条件 | 例 |
-| --- | --- | --- | --- |
-| **射影** | ノート本文 | ノートを書き換えたとき | `tasks` `logs` `log_last` `health` |
-| **観測の構成** | （宣言そのもの。どこを見に行くか） | ノートを書き換えたとき | `repo` |
-| **観測** | 世界 | 世界が変わったとき | `updated` `repo_last` `journal_last` `ahead_count` |
-
-作り直せないのは `id` と `status` だけで、それが Project の実体である。**front matter に `project:` と書く行為そのものが Project を作る**、と言い換えてもよい。
-
-#### `completed` は `status` の一部である
-
-`completed` は `status = Done` のときだけ意味を持つ。独立したフィールドにすると `active` かつ `completed: 2026-01-01` という無意味な組み合わせが表現できてしまう。状態に畳めば構文的に排除できる（§11 G-9）。front matter の表記（`project:` と `completed:` の 2 キー）は変えず、読み取ったあとの型だけを畳む。
-
-#### `repo` は定義ではなく観測の構成である
-
-`repo:` はノートに書かれるが、その意味は「git の観測をどこに向けるか」だけで、Project の性質を何も述べていない。`repo` を持たない Project は不完全なのではなく、**観測点を宣言していない**だけである。
-
-この区別が `has_remote`（§6.6）の設計の根拠になっている。`repo:` を持たない Project の `has_remote` が `false` ではなく `null` なのは、「remote が無い」という観測結果ではなく「観測していない」からである。
-
-#### セクションはドメインに属さない
-
-射影はノート**全体**から実体を拾う。見出しで絞り込まない。
-
-```
-tasks(pj)  = Tasks(pj.note)                              -- ノート内の Task 全部
-logs(pj)   = { l ∈ Logs(pj.note) | attach(l) = None }    -- 帰属しない Log 全部（§2.1）
-```
-
-Project がこれらを**所有しているわけではない**。ノートという Document の中にある実体を指しているだけである。
-
-**`## 次の予定` / `## オープンタスク` のようなセクションはドメインの構造ではない。** 人が文書を整理するための道具であり、モデルがその見出し文字列に依存してはならない。実体の判定は構文で決まる — `- [ ]` があれば Task、日付があれば Log。それ以外の行は自由記述であって、ドメインには現れない。
-
-この帰結として、次の 2 つは概念から消える。
-
-| 消えるもの | 理由 |
-| --- | --- |
-| `next_action` | 「これが次だ」という選択は人が `tasks(pj)` の中から行う。taski は候補を出すところまでを担い、選ばない（P3） |
-| `backlog` | Task でも Log でもない箇条書きは、モデル上どの実体でもない。「まだ実体になっていない意図」ではなく、単に自由記述である |
-
-`health` は残るが、基盤が `next_action` から `tasks(pj)` に移る。
-
-```
-planned(t) = t.schedule ≠ None ∨ t.contexts ≠ ∅ ∨ t.deadline ≠ None    -- §2.1
-
-health(pj) = NoNext      ⟺ #{ t ∈ tasks(pj) | t.status = Todo } = 0
-           | Unclarified ⟺ 未完了 Task はあるが、planned なものが 1 つも無い
-           | Ok          ⟺ planned な未完了 Task がある
-```
-
-計画上の属性は Task が持つので、`taski list` と `taski pj` は同じ抽出を共有する（P4）。「次に何をするか決まっているか」という `health` の意味は変わらないが、属性が構造化されるぶん**何が決まっていないか**まで言えるようになる。`planned` をこの粗さのままにするかは未決である（§11 G-12）。
-
-#### 同一性はパスに依存する
-
-`id` が `path.file_stem()` である以上、ノートをリネームすると別の Project になる。ジャーナルに残った `[[旧名]]` は解決先を失い、言及・実働の履歴が途切れる（§10 W-8）。
-
----
-
-一方 `journal_last` / `repo_last` / `updated` / `ahead_count` は Project の性質ではない。**Project に対して外から行った観測**である。
-
-```
-Observation(pj) = ジャーナル由来（§2.5）∪ git 由来 ∪ ファイルシステム由来
-```
-
-出力型 `PjProject`（§6.6）が持つ 5 つの層は、この区別に対応している。
-
-| 層 | 概念 | 例 |
-| --- | --- | --- |
-| a | Project 本体（`id` / `status`）と射影 | `status` `tasks` `logs` `health` |
-| b | Observation / fs | `repo_abs` |
-| c | Observation / git | `updated` `repo_last` `ahead_count` |
-| d | Observation / ジャーナル | `journal_last` `journal_work_last` |
-| e | 導出（`today` との差） | `stale_days` `log_days` `unreported` |
-
-現状の a 層にはこれに加えて `next_action` / `backlog` が含まれる。目標では消える（§11 G-10）。
-
-**定義と観測の分離は P3（事実と判断を分ける）の 1 つ下の層にある規律である。** 定義はノートを書き換えれば変わる。観測は世界を見に行かないと変わらない。両者を 1 つの構造体に平坦化するのは出力の都合であって、概念としては別に扱う。
-
-### 2.3 関係の層 — Task は Project を知らない
-
-**「Task が PJ に属する」は基本関係ではない。** Task が直接持つ関係は 2 つだけで、Project に届くのはそこから 2 段先である。
-
-| 層 | 関係 | 意味 | 現状の実装 |
-| --- | --- | --- | --- |
-| 1 | Task → Document | **収容**。どの文書に書かれているか。`task.at` の一部であり、独立した関係ではなく同一性そのもの | `FileInput.file_uri` + `line` |
-| 2 | Task → Ref | **参照**。行から `[[名前]]` / `#タグ` を抽出する | `pj::collect_refs` |
-| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve_wiki_link` |
-| 4 | Document → Project | **役割**。`front.project` を持つか（§2.2） | `parse_front_matter` |
-
-PJ 軸はこの合成として導出する。
-
-```
-docs(task)     = { task.at.0 } ∪ { d | r ∈ task.refs, resolve(r) = Some(d) }   -- 層 1・2・3
-projects(task) = { d ∈ docs(task) | d ∈ Project }                              -- 層 4
-```
-
-1 つの Task が複数の Project に属してよい（N:M）。
-
-**層を分ける理由は、PJ を経由しないビューが実在するからである。** タグ別ビューは層 1・2 だけで成立する。
-
-```
-tags(task) = { r ∈ task.refs | r は Tag } ∪ { name(task.at.0) }
-```
-
-これは `extract_tags` と `extract_file_tags` の合成そのもので、Project の概念を一切要求しない。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**（実際に分裂しているのは層 3 だけ — §11 G-5）
-
-**層をまたいだ依存を持ち込まない。** 現状の `extract_file_tags` は層 1 のタグ導出でありながら `project: active` を条件にしており、層 4 の情報を見ている。「どの PJ か」（事実）に「表示するか」（判断）が混入した形である。タグ導出は層 1・2 で完結させ、`status` による絞り込みは表示側の責務とする（§11 G-1）。
-
-なお本ドキュメントで**「帰属」と呼ぶのは Log と Task の関係（§2.1・§5）だけ**である。Task と Project の間にあるのは上の 4 層とその合成であって、帰属ではない。
-
-Project ノートの中でどのセクションに書かれているかも、この層のどこにも現れない。セクションはドメインの構造ではないからである（§2.2）。
-
-### 2.4 同一性 — PjId と参照の解決
-
-Project の正規名 `PjId` はノートのファイル名（拡張子を除いた stem）とする。参照は 2 つの表記で書かれる。
-
-| 表記 | 例 | 空白 |
-| --- | --- | --- |
-| `[[名前]]` | `[[在庫 管理]]` | 書ける |
-| `#タグ` | `#在庫_管理` | 書けない（`_` で代用する） |
-
-したがって照合は正規形どうしの比較ではなく、**照合キー**を経由する。
-
-```
-match_key(s) = s の空白を "_" に置換したもの
-pj ∋ ref  ⟺  match_key(id(pj)) = match_key(ref)
-```
-
-`match_key` は単射ではない（`在庫 管理` と `在庫_管理` が衝突する）。これは `#タグ` に空白を書けないという表層構文の制約から来る本質的な非可逆性なので、**衝突を禁止する側で解く**。すなわち PJ ノートの `match_key` は一意でなければならない。こう決めると曖昧さが「黙って片方を採る」ではなく「入力が不正」として表面化する。
-
-**参照の解決は 1 つの関数に集約する。**
-
-```
-resolve(ref, docs) : Option<Document>
-```
-
-Wiki リンクを開く時と PJ を照合する時で、同じ `resolve` を通す。Project かどうかは、解決した Document の `front` を見て決める。この形にすると「`note/` 直下にあるか」は概念から消え、探索範囲の設定という実装事項に退く（現状は 2 系統に分かれている — §11 G-5）。
-
-### 2.5 観測値の導出
-
-ジャーナル由来の観測は、ジャーナルを直接読むのではなく **Task 集合からの導出**として定義する。
-
-```
-Journals = { d ∈ Document | d.date ≠ None }
-hits(pj, R) = ∃ r ∈ R. match_key(id(pj)) = match_key(text(r))     -- §2.4
-
-mention(pj) = max { d.date | d ∈ Journals, hits(pj, refs(d の全文)) }
-work(pj)    = max { w      | d ∈ Journals, t ∈ Tasks(d), hits(pj, t.refs), w ∈ worked(t) }
-
-logs(t)     = { l ∈ Log | attach(l) = Some(t) }                   -- §2.1
-worked(t)   = { d.date | t.status = Done }
-            ∪ { date(log.when) | log ∈ logs(t), log.when が Moment }
-```
-
-- `Day` のログは実働にしない（`Moment` だけを見る）。ジャーナルでは「やった記録」ではなく予定・メモとしても日付行が書かれるため。**ただしこの規則の根拠は、Task が `schedule` を持つと消える。** 予定が Task 側に移れば Log は常に記録になるので、`Day` を実働に含めるかどうかは改めて決めることになる（§11 G-11）。
-- `max` を採る（走査順に依存させない）。時刻付きログは自分の日付を持つので、新しいジャーナルに前日ぶんを書き足せる。
-- 観測範囲を `Journals` に限る。Project ノート自身の `## ログ` は `log_last` が担当する別の観測である。
-
-**両者とも §2.3 の層 2（参照）だけを使い、層 1（収容）にも層 4（役割）にも触れない。** 違いは参照を集める範囲だけで、言及は文書全体、実働はタスク行に限る。
-
-**この定義のもとで「実働 ⊆ 言及」は定理になる。** タスク行は文書の一部なので `t.refs ⊆ refs(d の全文)`、したがって `hits(pj, t.refs) ⟹ hits(pj, refs(d の全文))`、すなわち `work(pj) ≠ ⊥ ⟹ mention(pj) ≠ ⊥`。集合の包含から従うだけで、PJ の概念も収容経路も出てこない。現状はこれを**規律**（両者で同じ `collect_refs` を呼ぶ）で守っており、破れうるので §7 I-17 に不変条件として書いてある。導出に直せば規律が不要になる（§11 G-4）。
-
-### 2.6 全体図
-
-```mermaid
-erDiagram
-    DOCUMENT ||--o{ TASK : "層1 収容"
-    DOCUMENT ||--o{ LOG : "収容"
-    TASK |o--o{ LOG : "帰属（インデント厳密大なり。付かない Log もある）"
-    TASK ||--o{ REF : "層2 参照"
-    REF }o--o| DOCUMENT : "層3 解決（解決先が無い Ref もある）"
-    DOCUMENT ||--o| PROJECT : "層4 役割（front.project を持つ）"
-    PROJECT ||--|| OBSERVATION : "外から観測される"
-
-    DOCUMENT {
-        Path path PK "同一性"
-        Date date "パス由来。journal のみ"
-        FrontMatter front "内容由来"
-    }
-    TASK {
-        Location at PK "Document と行番号"
-        Status status "Todo / Done / Cancelled"
-        String text "本文"
-        Schedule schedule "いつやるか・どれくらいかかるか"
-        ContextSet contexts "@PC / @AI など。着手の前提"
-        Date deadline "いつまでに（任意）"
-    }
-    REF {
-        RefKind kind "WikiName / Tag"
-        String text "[[名前]] の中身 / #タグ"
-    }
-    PROJECT {
-        PjId id PK "ノートのファイル名"
-        Status status "active / someday / done（完了日を含む）"
-    }
-    LOG {
-        When when "Day か Moment。実働判定は Moment だけ"
-        Duration duration "どれくらいかかったか（任意）"
-        String text "本文"
-    }
-    OBSERVATION {
-        Date mention_last "ジャーナル由来"
-        Date work_last "ジャーナル由来"
-        Date repo_last "git 由来"
-        Path repo_abs "fs 由来"
-    }
-```
-
-読み方:
-
-- **`TASK` から `PROJECT` への辺は無い。** 層 2 → 3 → 4 を辿って初めて届く（§2.3）。タグ別ビューは層 2 で止まるので、この図の右半分を必要としない。
-- **`LOG` の親は 2 つある。** 収容（必ず 1 つの `DOCUMENT` にある）と帰属（`TASK` に付くとは限らない）で、後者が `0..1` であることが重要である（§2.1）。PJ ノートの `## ログ` は帰属を持たない `LOG` で、`PROJECT` が所有しているのではなくセクションで絞り込んで指しているだけである（§2.2）。
-- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2.2）。`DOCUMENT` から出る辺が 3 本（層 1・層 4・`LOG` の収容）あるのはそのためで、層 3 の解決先として戻ってくる辺も同じ `DOCUMENT` である。
-- **`PROJECT` が 2 属性しか持たないことが重要である**（§2.2）。`next_action` や `backlog` が無いのは省略ではなく、セクション名に依存する射影をドメインから外した結果である。`tasks(pj)` / `logs(pj)` は図の上では `DOCUMENT → TASK` / `DOCUMENT → LOG` の辺をそのまま辿るだけで、`PROJECT` から生える辺は無い。
-- `OBSERVATION` も保存される実体ではなく、実行のたびに世界を見て作られる値である。`PROJECT` とは「概念としては別だが、出力では 1 つの構造体に平坦化される」関係にある。
-
-## 3. ドメインの語彙
+domain.md の語と、現状の Rust 表現の対応表である。`Rust 表現` が `（なし）` の行は型として存在しない概念で、それぞれ §10 に対応する G-* がある。
 
 | 記号 | 定義 | Rust 表現 |
 | --- | --- | --- |
 | `Date` | `YYYY-MM-DD` の暦日。辞書順 = 日付順 | `String` |
 | `Time` | `HH:MM`（正規化後は必ず 2 桁時） | `String` |
-| `When` | `Day(Date)` \| `Moment(Date, Time)`。§2.1 の目標であり、現状は `date` + `Option<Time>` の 2 フィールドに潰れている（§11 G-11） | （なし） |
+| `When` | `Day(Date)` \| `Moment(Date, Time)`。domain.md §1 の目標であり、現状は `date` + `Option<Time>` の 2 フィールドに潰れている（G-11） | （なし） |
 | `Duration` | 長さ。`45分` / `2時間` | （なし。`（45分）` は `meta` 文字列の一部） |
 | `Schedule` | `When` と `Duration` の組。少なくとも一方を持つ | （なし） |
 | `Context` | `@` に続く文字列。着手の前提条件。閉じた集合ではない | （なし。`meta` 文字列の一部） |
 | `Indent` | 行頭空白の幅。**バイト数**で数え、タブは 1 とする | `usize` |
 | `Name` | Wiki リンクの正規化名（`.md` を落とし前後を trim した文字列） | `String` |
 | `Tag` | `#` に続く空白と `#` を含まない文字列 | `String` |
-| `Ref` | `Name` ∪ `Tag`。PJ への参照（照合は §2.4） | `String` |
-| `PjId` | PJ の正規名 = ノートのファイル名。§2.4 の目標であり、現状は型として存在しない（§11 G-2） | （なし） |
+| `Ref` | `Name` ∪ `Tag`。PJ への参照（照合は domain.md §4） | `String` |
+| `PjId` | PJ の正規名 = ノートのファイル名。domain.md §4 の目標であり、現状は型として存在しない（G-2） | （なし） |
 | `Line` | 行番号。**`parser-core` は 0 始まり**、CLI の `toggle` 引数は 1 始まり | `usize` |
 
 `Indent` の数え方は 2 箇所（正規表現の `^(\s*)` のキャプチャ長と `pj::indent_width`）で独立に実装されているため、**両者が同じ数え方であることが不変条件**である（`indent_width` は `line.len() - line.trim_start().len()` でバイト数を返す）。片方を文字数に変えるとタブ混在時に帰属判定がずれる。
 
-## 4. 表層構文（行の文法）
+## 3. 表層構文（行の文法）
 
 解析は行単位で、行の種別は次の文法で決まる。`digit` は ASCII 数字、`sp` は空白 1 文字。
 
@@ -416,11 +81,11 @@ indent     = { " " | "\t" } ;
 構文上の要点:
 
 - `task` の `marker` は 1 文字の `[ x-]` に限る。したがって `- [[ノート名]]` は `[` の次が `[` なので `task` に**一致しない**。これは偶然ではなく要求（requirements.md 2.3）であり、正規表現を緩めてはならない。
-- `log` の時刻部は省略可能で、`log` は「時刻なしログ」と「時刻付きログ」を包含する。実働判定（§6.5）だけが `timed_log`（時刻部を必須にした狭い文法）を使う。
+- `log` の時刻部は省略可能で、`log` は「時刻なしログ」と「時刻付きログ」を包含する。実働判定（§5.5）だけが `timed_log`（時刻部を必須にした狭い文法）を使う。
 - `time_memo` は行頭に空白を許さない。ジャーナルのトップレベル時刻メモだけを拾うためで、タスク配下のログと衝突させないための構文的な区別である。
 - `fence` は開始・終了を区別せず、一致するたびにフラグを反転させる。言語指定付きの開始行（```` ```rust ````）も同じ規則で拾える。フェンス内の行はすべての解析から除外される。
 
-## 5. 走査のセマンティクス（タスク文脈）
+## 4. 走査のセマンティクス（タスク文脈）
 
 すべての行走査は次の状態機械で表せる。
 
@@ -471,9 +136,9 @@ stateDiagram-v2
 
 `≥` ではなく `>`（厳密大なり）である点も規則として固定である。同じインデントの `- 2026-08-02: ...` はタスクの兄弟であってログではない。
 
-## 6. Rust ドメインモデル（現状の型）
+## 5. Rust ドメインモデル（現状の型）
 
-ここからは**実装されている型**を記述する。§2 の概念（Document / Project / Task / Log / Observation）と 1 対 1 には対応していない。対応と差分は §11 にまとめてある。
+ここからは**実装されている型**を記述する。domain.md の概念（Document / Project / Task / Log / Observation）と 1 対 1 には対応していない。対応と差分は §10 にまとめてある。
 
 型の全体像と、P1・P2 が引いている純粋／副作用の境界:
 
@@ -490,14 +155,14 @@ flowchart TB
 
     T5 --> UI["VS Code TreeView / taski list / taski schedule"]
     T2 --> UI
-    T6 --> AGG["cli::pj の集約（fs 走査・git・ネットワーク）<br/>→ PjProject（§6.6）"]
+    T6 --> AGG["cli::pj の集約（fs 走査・git・ネットワーク）<br/>→ PjProject（§5.6）"]
     T3 --> AGG
     T4 --> AGG
 ```
 
 `parser-core` 側の矢印はすべて**関数適用**であり、外部状態を経由しない。`cli` 側の箱だけがファイルシステム・git・ネットワークに触れる。基準日（`today`）もこの境界を越えて引数として渡される。
 
-### 6.1 状態の代数
+### 5.1 状態の代数
 
 ```rust
 enum TaskStatus  { Incomplete, Completed, Cancelled }   // parser-core
@@ -520,9 +185,9 @@ enum PjHealth    { Ok, Unclarified, NoNext }            // parser-core::pj（導
 | 進捗の分母（`total_count`） | 含む | 含む | **含まない**（中立） |
 | 進捗の分子（`completed_count`） | — | 含む | — |
 | 今日以外の日付グループ | 表示 | 非表示 | 非表示 |
-| 実働判定（§6.5） | — | 実働 | **実働でない** |
+| 実働判定（§5.5） | — | 実働 | **実働でない** |
 
-### 6.2 タスク（`parser-core`）
+### 5.2 タスク（`parser-core`）
 
 ```rust
 struct ParsedTask {                    // parse_tasks_internal の出力（日付を指定して抽出）
@@ -544,7 +209,7 @@ enum Dated { NoDate, On(Date) }
 
 だが、WASM 境界を素直に通すために空文字列で符号化している（P5）。判別子は `date.is_empty()`。
 
-### 6.3 ツリーとスケジュール（`parser-core`）
+### 5.3 ツリーとスケジュール（`parser-core`）
 
 ```rust
 struct FileInput { file_name: String, file_uri: String, lines: Vec<String> }   // 唯一の入力型（Deserialize）
@@ -583,11 +248,11 @@ enum ScheduleItem {
 }
 ```
 
-現在の符号化では時刻メモ由来の項目は `task_text = ""`, `end_time = ""`, `status = Incomplete`, `task_line = log_line` を満たす。判別子として `task_text.is_empty()` を使うが、**これは全域的ではない**（§10 W-3）。
+現在の符号化では時刻メモ由来の項目は `task_text = ""`, `end_time = ""`, `status = Incomplete`, `task_line = log_line` を満たす。判別子として `task_text.is_empty()` を使うが、**これは全域的ではない**（W-3）。
 
 `file_uri` は `parse_schedule_internal` の時点では常に `""` で、`build_schedule_data_internal` が埋める。中間表現に対する事後条件と最終出力に対する事後条件が異なる唯一の箇所である。
 
-§6.2〜§6.3 の型をまとめると次のとおり。実線のひし形は合成（所有）、破線の矢印は関数による導出を表す。多重度 `1..*` は I-6（空グループを出力しない）の帰結である。
+§5.2〜§5.3 の型をまとめると次のとおり。実線のひし形は合成（所有）、破線の矢印は関数による導出を表す。多重度 `1..*` は I-6（空グループを出力しない）の帰結である。
 
 ```mermaid
 classDiagram
@@ -672,7 +337,7 @@ classDiagram
     ScheduleEntry --> TaskStatus
 ```
 
-### 6.4 PJ ノート（`parser-core::pj`）
+### 5.4 PJ ノート（`parser-core::pj`）
 
 ```rust
 struct FrontMatterParsed { project: Option<ProjectStatus>, repo: Option<String>, completed: Option<String> }
@@ -724,7 +389,7 @@ is_meta_element(e) ⟺ e = "軽" ∨ e = "重"
 
 「いずれか 1 要素」で足りるとしているのは、`（45分・重）` のように一部だけ書く運用を許すため。逆に全要素を要求すると通常の注記より先に本物のメタデータを落とす。`（仮）` や `（髪・服・顔）` はどの要素も一致しないので分離されない。
 
-### 6.5 参照と実働（`parser-core::wiki_link` / `pj`）
+### 5.5 参照と実働（`parser-core::wiki_link` / `pj`）
 
 ```rust
 struct WikiLinkMatch  { name: String, start: usize, end: usize }   // start/end は元テキストのバイト位置
@@ -762,7 +427,7 @@ flowchart TD
 
 時刻の**ない**ログはどちらの枝にも入らない。ジャーナルでは時刻なしログが予定・メモとしても書かれるため、含めると言及と区別がつかなくなる。
 
-§6.4〜§6.5 の型をまとめると次のとおり。`PjNote` が `PjHealth` を、`FrontMatterParsed` が `ProjectStatus` を持つのに対し、`JournalWork` はどの型にも所有されない独立した観測値である（`cli` 側が日付の最大値を採るためだけに使う）。
+§5.4〜§5.5 の型をまとめると次のとおり。`PjNote` が `PjHealth` を、`FrontMatterParsed` が `ProjectStatus` を持つのに対し、`JournalWork` はどの型にも所有されない独立した観測値である（`cli` 側が日付の最大値を採るためだけに使う）。
 
 ```mermaid
 classDiagram
@@ -826,7 +491,7 @@ classDiagram
     NormalizedName ..> JournalWork : collect_refs で refs を作る
 ```
 
-### 6.6 PJ 集約（`cli::pj`）
+### 5.6 PJ 集約（`cli::pj`）
 
 `PjProject` は `PjNote`（純粋）と外部世界の観測（git・ジャーナル・ファイルシステム）の合成である。
 
@@ -848,7 +513,7 @@ flowchart LR
     P --> DY["stale_days / log_days / repo_days<br/>journal_days / journal_work_days<br/>= today − 各日付"]
 ```
 
-フィールドは由来ごとに 5 つの層に分かれる。この層分けは出力の都合ではなく §2.2 の区別（a が Project の定義、b〜e が Observation）に対応している。
+フィールドは由来ごとに 5 つの層に分かれる。この層分けは出力の都合ではなく domain.md §2 の区別（a が Project の定義、b〜e が Observation）に対応している。
 
 ```rust
 struct PjProject {
@@ -884,7 +549,7 @@ struct PjProject {
 
 `None` と `Some(false)` を潰すと、`repo:` を持たないノート（そもそもリポジトリを伴わない PJ）が「バックアップ無し」として数えられてしまう。
 
-日数フィールドはすべて `Option<i64>` で、元の日付が `None` なら日数も `None`。基準日より後の観測はあらかじめ捨てているので、値があるときは必ず `≥ 0`（§7 I-16）。
+日数フィールドはすべて `Option<i64>` で、元の日付が `None` なら日数も `None`。基準日より後の観測はあらかじめ捨てているので、値があるときは必ず `≥ 0`（I-16）。
 
 出力全体は次のとおり。
 
@@ -940,7 +605,7 @@ classDiagram
     FrontMatterParsed ..> PjProject : (a) status / repo / completed
 ```
 
-## 7. 不変条件
+## 6. 不変条件
 
 出力に対して常に成り立つべき述語を列挙する。番号は他ドキュメントやコメントから参照するためのもの。
 
@@ -979,7 +644,7 @@ classDiagram
 
 - **I-16** 観測由来の日付は基準日を越えない: `updated` / `log_last` / `repo_last` / `journal_last` / `journal_work_last` と `logs` の各要素、および `ahead_count` の母数は、`≤ today` のものだけから作る。したがって対応する `*_days` はすべて `≥ 0`。
   **巻き戻るのはこの観測由来のフィールドだけ**であり、`next_action` / `health` / `backlog` / `status` / `completed` はノートの現在の内容をそのまま出す（過去のノート内容を git から復元することはしない）。front matter の `completed:` が `today` より後になることは構文上ありうる。`--today` を渡した出力は「その日時点のスナップショット」ではない。
-- **I-17** 実働は言及の部分集合: `journal_work_last.is_some() ⟹ journal_last.is_some()`。両者は同じ `collect_refs` を使うため成立する。§2.5 の導出形ではこれは定理になり、不変条件として書く必要がなくなる（§11 G-4）。日付についても、実働を検出したジャーナルファイルは同じ参照を含むので `journal_last ≥ (その実働のファイル日付)`（例外は §10 W-5）。
+- **I-17** 実働は言及の部分集合: `journal_work_last.is_some() ⟹ journal_last.is_some()`。両者は同じ `collect_refs` を使うため成立する。domain.md §5 の導出形ではこれは定理になり、不変条件として書く必要がなくなる（G-4）。日付についても、実働を検出したジャーナルファイルは同じ参照を含むので `journal_last ≥ (その実働のファイル日付)`（例外は W-5）。
 - **I-18** 未反映の整合: `unreported ⟺ unreported_count > 0`。かつ
 
   ```
@@ -996,7 +661,7 @@ classDiagram
 
 - **I-22** `--format json|yaml` を持つサブコマンドは、該当 0 件でも空配列を出力し終了コード 0 を返す。フォーマットの解釈は集計より前に済ませる（集計を先にすると 0 件時の早期 return がこの契約を破る）。
 
-## 8. 写像の一覧
+## 7. 写像の一覧
 
 `parser-core`（純粋・全域）:
 
@@ -1010,10 +675,10 @@ classDiagram
 | `parse_front_matter` | `&[String] -> Option<FrontMatterParsed>` | `---` で始まらない / 閉じない / YAML 不正なら `None` |
 | `extract_tags` | `&str -> Vec<String>` | 重複を除かない（出現順） |
 | `extract_file_tags` | `(&[String], &str) -> Vec<String>` | `project: active` のときだけ 1 要素、他は空 |
-| `pj::split_decision_meta` | `&str -> Option<(String, String)>` | §6.4 の述語 |
+| `pj::split_decision_meta` | `&str -> Option<(String, String)>` | §5.4 の述語 |
 | `pj::parse_pj_note` | `&[String] -> PjNote` | I-11〜I-15 |
 | `pj::collect_refs` | `&str -> Vec<String>` | 言及・実働で共有（P4） |
-| `pj::journal_work` | `(&[String], &str) -> Vec<JournalWork>` | 強い帰属（§5） |
+| `pj::journal_work` | `(&[String], &str) -> Vec<JournalWork>` | 強い帰属（§4） |
 | `wiki_link::parse_wiki_links` | `&str -> Vec<WikiLinkMatch>` | 表示名付き（`[[名前 \| 表示]]`）は対象外 |
 | `wiki_link::normalize_wiki_name` | `&str -> NormalizedName` | trim + `.md` 除去 + 日付判定 |
 | `wiki_link::resolve_wiki_link` | `(&str, &[PathBuf]) -> Option<PathBuf>` | 候補列の**先頭一致**。優先順位は呼び出し側が候補の並びで表現する |
@@ -1031,7 +696,7 @@ classDiagram
 | `repo_info` | `git log` / `git remote` | I-18・I-19 を 1 回のクエリ結果から作る |
 | `fetch_repos` | `git fetch`（並列 8 本） | 失敗しても集計を続行し、失敗を `fetch_failed` で返す |
 
-## 9. 状態遷移
+## 8. 状態遷移
 
 タスクの状態はトグルで巡回する。VS Code の `taski.toggleTask` と CLI の `taski toggle` は同じ巡回を実装する。
 
@@ -1051,32 +716,32 @@ stateDiagram-v2
 
 `PjHealth` は遷移ではなく格子である。`NoNext ⊑ Unclarified ⊑ Ok` は「ノートに書かれた情報量」の順序であり、I-11 のとおり `(next_action, next_action_meta)` の有無から毎回計算される。状態として保持されないので、ノートを書き換えれば次の実行で必ず追随する。
 
-## 10. 型に表れていない前提（既知の弱さ）
+## 9. 型に表れていない前提（既知の弱さ）
 
-現在のモデルが型で守れていない点を明示する。ここに挙げたものは「直すべき」ではなく「テストと規約で守る」と決めた箇所である。改めるときは §12 の制約に従う。
+現在のモデルが型で守れていない点を明示する。ここに挙げたものは「直すべき」ではなく「テストと規約で守る」と決めた箇所である。改めるときは §11 の制約に従う。
 
 - **W-1. 日付・時刻が `String`。** `Date` / `Time` の newtype はなく、`YYYY-MM-DD` の辞書順が日付順と一致する性質に依存して文字列のまま比較・フィルタしている（`is_future`, `max`, ソート）。不正な日付（`2026-13-45`）は構文上は通り、日数計算（`days_between` = `chrono` によるパース）でだけ `None` に落ちる。
 - **W-2. 「無し」の表現が 2 通りある。** `parser-core` の境界型では空文字列（`ParsedTaskWithDate::date`, `TreeDateGroup::date_key`, `ScheduleEntry::time`）、`cli` の出力型では `Option`。境界を越える型は前者、越えない型は後者、という規約で使い分ける。
-- **W-3. `ScheduleEntry` の判別子が全域でない。** 時刻メモの判別に `task_text.is_empty()` を使うが、本文が空のタスク（`- [ ]` の直後に何も書かず、配下に日付ログを置いた場合）も同じ形になる。実害が小さいので許容している。§2.1 の `attach(log) : Option<Task>` に直せば判別子が全域になり、この弱さは消える（§11 G-7）。
+- **W-3. `ScheduleEntry` の判別子が全域でない。** 時刻メモの判別に `task_text.is_empty()` を使うが、本文が空のタスク（`- [ ]` の直後に何も書かず、配下に日付ログを置いた場合）も同じ形になる。実害が小さいので許容している。domain.md §1 の `attach(log) : Option<Task>` に直せば判別子が全域になり、この弱さは消える（G-7）。
 - **W-4. 行番号の基点が層で違う。** `parser-core` は 0 始まり、CLI の `toggle <file> <line>` は 1 始まり。変換は CLI の引数処理でのみ行う。
 - **W-5. `repo_last` と基準日のタイムゾーン差。** `%ad`（author date）はコミット自身のタイムゾーンで描画されるため、自分より東のタイムゾーンで作られたコミットはローカルの「今日」より 1 日先の日付を持ちうる。それが未来として除外されると `repo_last` が 1 つ古いコミットに巻き戻り、`unreported` が false に倒れる。同様に、ジャーナルの時刻付きログが自分のファイル日付より後の日付を持つ場合、I-17 の日付についての含意（`journal_work_last ≤ journal_last`）は成り立たない。個人利用では発生頻度が低いので許容している。
 - **W-6. `PjProject.status` は `String`。** `parser-core` 側は `ProjectStatus` の列挙だが、JSON の表現を固定するため出力型では文字列に落としている。追加時は `status_label` と `parse_status_filter` の両方を更新する必要がある（型では強制されない）。
 - **W-7. JSON のキー命名が層で違う。** `parser-core` の境界型は `#[serde(rename_all = "camelCase")]` を持つ（TypeScript 側の慣習に合わせるため）が、`cli::pj` の出力型は指定なし＝ snake_case である。結果として `taski list --format json` は `fileUri` / `dateKey`、`taski pj --format json` は `next_action` / `log_last` を出す。同一 CLI の中で不揃いだが、どちらも既に利用側の契約になっているので揃えない。`PjHealth` だけは kebab-case 指定で `no-next` / `unclarified` / `ok` を出す。
-- **W-8. Project の同一性がパスに依存する。** `PjId` はノートのファイル名なので、リネームすると別の Project になる。ジャーナルに残った `[[旧名]]` は解決先を失い、その Project の言及・実働の履歴が途切れる（`journal_last` / `journal_work_last` が `null` に戻る）。front matter に安定 ID を持たせれば切り離せるが、参照側は `[[名前]]` のままなので、リンクの追随は別途必要になる。現状は「リネームしない・するなら参照も一括で書き換える」という運用で回避している。改めるなら §12 の制約に従う。
+- **W-8. Project の同一性がパスに依存する。** `PjId` はノートのファイル名なので、リネームすると別の Project になる。ジャーナルに残った `[[旧名]]` は解決先を失い、その Project の言及・実働の履歴が途切れる（`journal_last` / `journal_work_last` が `null` に戻る）。front matter に安定 ID を持たせれば切り離せるが、参照側は `[[名前]]` のままなので、リンクの追随は別途必要になる。現状は「リネームしない・するなら参照も一括で書き換える」という運用で回避している。改めるなら §11 の制約に従う。
 
-## 11. 概念モデルとの差分（移行課題）
+## 10. ドメインモデルとの差分（移行課題）
 
-§2 の目標形と現状の実装（§6〜§8）の差を列挙する。番号は着手順ではない。§10 の W-* が「型で守れていないが、そう決めた」ものであるのに対し、こちらは「概念とずれているので、いずれ直す」ものである。
+domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。番号は着手順ではない。§9 の W-* が「型で守れていないが、そう決めた」ものであるのに対し、こちらは「概念とずれているので、いずれ直す」ものである。
 
 概念と現状の型の対応:
 
-| 概念（§2） | 現状の実装 | ずれ |
+| 概念（domain.md） | 現状の実装 | ずれ |
 | --- | --- | --- |
 | `Document` | `FileInput`（`file_uri` + `lines`）、または `&[String]` と別引数 | G-8 |
 | `Project` 本体（`id` + `status`） | ファイル名 + `FrontMatterParsed.project`。`completed` が独立している | G-9 |
 | Project の射影（`tasks` / `logs` / `health`） | `pj::PjNote`。セクション名で絞り込んでおり、`next_action` / `backlog` という概念に無いものを作っている | G-3・G-10 |
 | 観測の構成（`repo`） | `FrontMatterParsed.repo`。定義と同じ層に置かれている | — |
-| `Observation` | `cli::pj::PjProject` の b〜e 層（§6.6） | — |
+| `Observation` | `cli::pj::PjProject` の b〜e 層（§5.6） | — |
 | `Task` | `ParsedTask` / `ParsedTaskWithDate` / `ScheduleEntry` / `next_action: String` | G-3・G-7 |
 | `Log` | `ParsedTaskWithDate.log` / `ScheduleEntry` / `pj::PjLogEntry` の 3 通り | G-7 |
 | `attach(log)` | 型に無い。平坦化・空文字列判別・概念の欠落で表現している | G-7 |
@@ -1095,28 +760,28 @@ stateDiagram-v2
 
 **G-1 タグ導出が層をまたいで PJ の `status` を見ている。**
 
-- 現状: `extract_file_tags` は「ファイル名をそのファイル内の全タスクのタグにする」導出、すなわち §2.3 の層 1・2 の話である。にもかかわらず `project: active` を条件にしており、層 4（Document → Project の役割）の情報を層 1 の導出が参照している。
+- 現状: `extract_file_tags` は「ファイル名をそのファイル内の全タスクのタグにする」導出、すなわち domain.md §3 の層 1・2 の話である。にもかかわらず `project: active` を条件にしており、層 4（Document → Project の役割）の情報を層 1 の導出が参照している。
 - 目標: タグ導出を層 1・2 で完結させ、`status` に依存させない。絞り込みは表示側（タグ別ビュー・`list --tag`）の責務とする。
 - 影響: `someday` / `done` の PJ ノートに書いたタスクにもファイル名タグが付く。出したくなければ表示側でフィルタする。requirements.md 2.2 の「`someday` / `done` では自動タグを付与しない」は、パーサーの要求ではなくビューの要求として書き直すことになる。
 
-**`extract_file_tags` / `collect_refs` / `parse_pj_note` の 3 つは「同じ概念の 3 実装」ではない。** 順に層 1 のタグ導出・層 2 の参照抽出・PJ ノート内での役割であり、統合すべきものではない。`taski list` と `taski pj` が別世界を見ているように見えるのは、前者が層 1・2 で止まり、後者が層 3・4 まで辿るからである（§2.3）。この差は設計であって欠陥ではない。実際に直すべきなのは、上の層またぎ（G-1）と、層 3 が 2 系統あること（G-5）の 2 点だけである。
+**`extract_file_tags` / `collect_refs` / `parse_pj_note` の 3 つは「同じ概念の 3 実装」ではない。** 順に層 1 のタグ導出・層 2 の参照抽出・PJ ノート内での役割であり、統合すべきものではない。`taski list` と `taski pj` が別世界を見ているように見えるのは、前者が層 1・2 で止まり、後者が層 3・4 まで辿るからである（domain.md §3）。この差は設計であって欠陥ではない。実際に直すべきなのは、上の層またぎ（G-1）と、層 3 が 2 系統あること（G-5）の 2 点だけである。
 
 **G-2 `PjId` が無く、表記変換が 2 箇所に独立実装されている。**
 
 - 現状: `name.replace(' ', "_")` が `cli::pj::journal_dates` と `parser_core::extract_file_tags` にある。逆変換は無く、照合は `refs.contains(name) || refs.contains(tag)` の両方試しで回避している。
-- 目標: §2.4 の `match_key` を 1 箇所に置き、PJ ノートの `match_key` の一意性を不変条件にする。
+- 目標: domain.md §4 の `match_key` を 1 箇所に置き、PJ ノートの `match_key` の一意性を不変条件にする。
 - 影響: `在庫 管理.md` と `在庫_管理.md` が同居すると、現在は黙って両方に同じ言及が付く。一意性を課すとエラーとして表面化する。
 
 **G-3 PJ ノートのタスクが Task 型になっていない。**
 
 - 現状: `PjNote.next_action: Option<String>`。`## 次の予定` の 1 行を文字列として持つだけで、行番号もファイルも持たない。同じチェックボックス行なのに `ParsedTask` にはならず、`taski pj` の出力から元の行へ飛べない。ノート内の他のチェックボックス行はそもそも読まれない。
-- 目標: §2.2 の `tasks(pj)`。ノート内のチェックボックス行をすべて Task として扱い、位置（`at`）を持たせる。
+- 目標: domain.md §2 の `tasks(pj)`。ノート内のチェックボックス行をすべて Task として扱い、位置（`at`）を持たせる。
 - 影響: `PjProject` の出力が「次の予定 1 行の文字列」から「未完了 Task の列（位置つき）」に変わる。VS Code 側から PJ のタスクへ遷移できるようになる。G-10 の一部として同時に行うことになる。
 
 **G-4 観測が Task を経由していない。**
 
-- 現状: `cli::pj::journal_dates` がジャーナルの本文を直接読んで言及と実働を集める。Task の集合を作らないので、§7 I-17（実働 ⊆ 言及）は「両者が同じ `collect_refs` を呼ぶ」という規律でしか守られていない。
-- 目標: §2.5 の導出に直す。I-17 が定理になり、不変条件として書く必要がなくなる。
+- 現状: `cli::pj::journal_dates` がジャーナルの本文を直接読んで言及と実働を集める。Task の集合を作らないので、I-17（実働 ⊆ 言及）は「両者が同じ `collect_refs` を呼ぶ」という規律でしか守られていない。
+- 目標: domain.md §5 の導出に直す。I-17 が定理になり、不変条件として書く必要がなくなる。
 - 影響: 素朴に置き換えると遅くなる。現状は「見つけたら打ち切り」の早期終了（`remaining_mention` / `remaining_work`）が効いていて、全ジャーナルを読み切らない。導出形にしてもこの枝刈りを保てる形にする必要がある。
 
 **G-5 参照の解決が 2 系統ある。**
@@ -1129,7 +794,7 @@ stateDiagram-v2
   | PJ を照合する | `refs.contains(name) \|\| refs.contains(tag)` | `note/` **直下のみ**。文字列一致 |
 
   同じ `[[在庫管理]]` が、開く時はファイル探索で、集計時は文字列一致で解決される。`note/sub/在庫管理.md` に `project: active` を書くと「開けるが PJ にならない」。
-- 目標: §2.4 の `resolve` 1 本に集約する。
+- 目標: domain.md §4 の `resolve` 1 本に集約する。
 - 影響: PJ の探索範囲を広げるかは別の判断（G-6）。「解決関数を一致させること」と「範囲を決めること」を分けて扱う。
 
 **G-6 走査範囲が非対称。**
@@ -1155,10 +820,10 @@ stateDiagram-v2
   | 型 | 帰属の扱い |
   | --- | --- |
   | `ParsedTaskWithDate` | タスクとログを 1 構造体に平坦化し、帰属していることを前提にしている |
-  | `ScheduleEntry` | 帰属の有無を `task_text.is_empty()` で判別する（全域でない — §10 W-3） |
+  | `ScheduleEntry` | 帰属の有無を `task_text.is_empty()` で判別する（全域でない — W-3） |
   | `pj::PjLogEntry` | 帰属の概念自体が無い（`## ログ` は元から帰属しないので困っていない） |
-- 目標: §2.1 の `Log { date, time, text }` 1 つと、関係 `attach(log) : Option<Task>`。時刻を構造として持てば実働判定は正規表現をもう 1 本引くのではなく `log.time.is_some()` になり、帰属を `Option` で持てば W-3 の判別子が全域になる。
-- 影響: `ParsedTaskWithDate` は境界型なので JSON / WASM の表現が変わる。P5 と §10 W-2 の制約下では、利用側（VS Code 拡張・CLI の両方）の同時修正が要る変更になる。
+- 目標: domain.md §1 の `Log { date, time, text }` 1 つと、関係 `attach(log) : Option<Task>`。時刻を構造として持てば実働判定は正規表現をもう 1 本引くのではなく `log.time.is_some()` になり、帰属を `Option` で持てば W-3 の判別子が全域になる。
+- 影響: `ParsedTaskWithDate` は境界型なので JSON / WASM の表現が変わる。P5 と W-2 の制約下では、利用側（VS Code 拡張・CLI の両方）の同時修正が要る変更になる。
 
 **G-8 Document がヘッダを持たず、呼び出し側が付随情報を渡している。**
 
@@ -1168,14 +833,14 @@ stateDiagram-v2
 
 **G-9 `completed` が `status` から独立している。**
 
-- 現状: `FrontMatterParsed { project: Option<ProjectStatus>, completed: Option<String> }` で 2 つが独立したフィールドになっている。`project: active` かつ `completed: 2026-01-01` が表現でき、`PjProject` にもそのまま出る。§7 I-16 が「front matter の `completed:` が `today` より後になることは構文上ありうる」と断っているのも、この独立性の帰結である。
-- 目標: §2.2 のとおり `Status = Active | Someday | Done(Option<Date>)` に畳み、`completed` を `Done` の中にだけ置く。
-- 影響: 小さい。front matter の 2 キー表記（`project:` / `completed:`）は変えず、`PjProject` の JSON も `status: String`（§10 W-6）と `completed: Option<String>` のまま出せる。畳むのは `parse_front_matter` の戻り値から `collect_projects` までの区間に閉じるので、利用側の契約は変わらない。
+- 現状: `FrontMatterParsed { project: Option<ProjectStatus>, completed: Option<String> }` で 2 つが独立したフィールドになっている。`project: active` かつ `completed: 2026-01-01` が表現でき、`PjProject` にもそのまま出る。I-16 が「front matter の `completed:` が `today` より後になることは構文上ありうる」と断っているのも、この独立性の帰結である。
+- 目標: domain.md §2 のとおり `Status = Active | Someday | Done(Option<Date>)` に畳み、`completed` を `Done` の中にだけ置く。
+- 影響: 小さい。front matter の 2 キー表記（`project:` / `completed:`）は変えず、`PjProject` の JSON も `status: String`（W-6）と `completed: Option<String>` のまま出せる。畳むのは `parse_front_matter` の戻り値から `collect_projects` までの区間に閉じるので、利用側の契約は変わらない。
 
 **G-10 セクション名がドメインモデルに漏れている。**
 
-- 現状: `parse_pj_note` は `split_sections` で `## 次の予定` / `## ログ` / `## オープンタスク` という 3 つの日本語見出しを探し、そこから `next_action` / `logs` / `backlog` を作る。`health` は `next_action` から導出される（§7 I-11）。requirements.md 2.3 の「チェックボックスを持つのは `## 次の予定` だけ」という規約は、この構造を成り立たせるための書式の制約である。
-- 目標: §2.2 のとおりセクションをドメインから外す。射影はノート全体から実体を拾い、`next_action` と `backlog` は概念から消す。`health` は `tasks(pj)` から再定義する。
+- 現状: `parse_pj_note` は `split_sections` で `## 次の予定` / `## ログ` / `## オープンタスク` という 3 つの日本語見出しを探し、そこから `next_action` / `logs` / `backlog` を作る。`health` は `next_action` から導出される（I-11）。requirements.md 2.3 の「チェックボックスを持つのは `## 次の予定` だけ」という規約は、この構造を成り立たせるための書式の制約である。
+- 目標: domain.md §2 のとおりセクションをドメインから外す。射影はノート全体から実体を拾い、`next_action` と `backlog` は概念から消す。`health` は `tasks(pj)` から再定義する。
 - 影響: **本ドキュメントの移行課題の中で最も大きい。**
 
   | 影響 | 内容 |
@@ -1183,7 +848,7 @@ stateDiagram-v2
   | 書式の規約 | 「チェックボックスは `## 次の予定` だけ」が不要になる。PJ ノートが複数の Task を持てるようになり、それらは `taski list` の「日付なし」グループに出る。絞り込みはビュー側の責務とする（G-1 と同じ結論） |
   | 出力契約 | `taski pj` から `next_action` / `next_action_body` / `next_action_meta` / `next_action_ai` / `backlog` / `backlog_count` が消え、未完了 Task の列（位置つき）が入る。`cli/AGENTS.md` と利用側 skill の同時修正が要る |
   | 実装 | `split_sections` / `extract_next_action` / `extract_backlog` が不要になる。`extract_logs` は「帰属しない Log」の抽出に変わる |
-  | 不変条件 | §7 の I-11 は `tasks(pj)` ベースに書き換え、I-12 / I-13 / I-15 は対象が消えるので削除になる |
+  | 不変条件 | §6 の I-11 は `tasks(pj)` ベースに書き換え、I-12 / I-13 / I-15 は対象が消えるので削除になる |
   | 誤検出 | 説明文中に日付行（`2026-08-01: 締切` など）を書くとログとして拾われる。セクションによる隔離が無くなるため、`## ログ` の外に書いた記録も拾えるようになるのと表裏である |
 
   P3 の例外（`PjHealth`）は残る。基盤が `next_action` から `tasks(pj)` に移るだけで、「他フィールドから決定的に導出される要約」という性格は変わらない。
@@ -1201,16 +866,16 @@ stateDiagram-v2
   **計画と実績の対比が成立していない。** `src/schedulePanel.ts` は計画列にタスク本文、実績列にログ本文を出すが、**行が置かれる時刻はログ由来の 1 つだけ**である。「10:00-11:00 の予定が実際は 10:15-11:20 だった」というずれを表現できない。requirements.md 3.5 の「計画（plan）と実績（actual）を対比できる構成」は、データモデル上は満たされていない。
 
   所要時間も 2 箇所にある。判断メタデータの `（45分）` はスケジュールに使われず、ログの `10:00-11:00` は `list` に出ない。
-- 目標: §2.1 の `Schedule`（`When` + `Duration`）。Task が自分の `schedule` を持ち、Log は起きたことの記録に徹する。`10:00-11:00` は `Moment(10:00)` + `Duration(60分)` の表記になり、`end_time` は導出値として消える。
+- 目標: domain.md §1 の `Schedule`（`When` + `Duration`）。Task が自分の `schedule` を持ち、Log は起きたことの記録に徹する。`10:00-11:00` は `Moment(10:00)` + `Duration(60分)` の表記になり、`end_time` は導出値として消える。
 - 影響:
 
   | 影響 | 内容 |
   | --- | --- |
-  | 記法 | タスク行に「いつ・どれくらい」を書けるようにする必要がある。行末の括弧が既に所要時間と締切を持つので、そこを拡張するのが素直だが、日付の書き方が締切と衝突する（G-12）。表層構文の設計は別途詰める（§4） |
-  | 型 | `ScheduleEntry` の `time` / `end_time` が `When` + `Duration` に変わる。境界型なので JSON / WASM の表現が変わり、`schedulePanel.ts` の同時修正が要る（P5・§10 W-2） |
+  | 記法 | タスク行に「いつ・どれくらい」を書けるようにする必要がある。行末の括弧が既に所要時間と締切を持つので、そこを拡張するのが素直だが、日付の書き方が締切と衝突する（G-12）。表層構文の設計は別途詰める（§3） |
+  | 型 | `ScheduleEntry` の `time` / `end_time` が `When` + `Duration` に変わる。境界型なので JSON / WASM の表現が変わり、`schedulePanel.ts` の同時修正が要る（P5・W-2） |
   | スケジュール | グリッドが計画列と実績列に別々の時刻を持てるようになる。ずれの表示は新機能なので、UI の設計が要る |
-  | 実働判定 | 「時刻の無いログは実働と見なさない」の根拠が消える（§2.5）。予定が Task 側に移れば Log は常に記録になるため。`Day` を実働に含めるかは**未決** |
-  | 語彙 | `Time` の newtype 化（§10 W-1）と同時にやると手戻りが少ない。`When` は `Date` / `Time` を包む型なので、先に文字列のまま `When` を作ると二度手間になる |
+  | 実働判定 | 「時刻の無いログは実働と見なさない」の根拠が消える（domain.md §5）。予定が Task 側に移れば Log は常に記録になるため。`Day` を実働に含めるかは**未決** |
+  | 語彙 | `Time` の newtype 化（W-1）と同時にやると手戻りが少ない。`When` は `Date` / `Time` を包む型なので、先に文字列のまま `When` を作ると二度手間になる |
 
 **G-12 `meta` が構造を持たない文字列である。**
 
@@ -1222,7 +887,7 @@ stateDiagram-v2
   | 契約が半端 | `taski list --format json` の `meta` は `"45分・重・@PC"` という文字列で、利用側が `45分` をパースし直す必要がある。requirements.md 6 の「利用側に同じ判定を再実装させないため」という意図を半分しか満たしていない |
   | health が粗い | `Unclarified` は「`meta` が無いこと」で決まるので、`（@PC）` だけ書いたタスクも `ok` になる。**何が決まっていないか**を言えない |
   | 値になっていない | `duration_re` / `deadline_re` は `is_meta_element` からしか呼ばれない。つまり `45分` も `08-15` も**「メタデータらしさ」の判定にしか使われず、値として解釈されていない**。`meta` 文字列に入って表示されるだけである |
-- 目標: §2.1 のとおり `schedule` / `contexts` / `deadline` を Task の属性にする。行末の括弧は表層構文（§4）に退き、`meta` という概念は消える。重さ（`軽` / `重`）は属性にしない。
+- 目標: domain.md §1 のとおり `schedule` / `contexts` / `deadline` を Task の属性にする。行末の括弧は表層構文（§3）に退き、`meta` という概念は消える。重さ（`軽` / `重`）は属性にしない。
 - 影響:
 
   | 影響 | 内容 |
@@ -1234,7 +899,7 @@ stateDiagram-v2
   | health | 「何が決まっていないか」を言えるようになる。ただし `Unclarified` の定義を変えるかは**未決**（重さが無くなるぶん、判定の材料は `schedule` / `contexts` / `deadline` に絞られる） |
   | 順序 | G-11 と同じ括弧を触る（`schedule` はどちらの課題にも現れる）ので、まとめて行うことになる |
 
-  **表層構文に未決が 3 つある**（§4 で詰める）。
+  **表層構文に未決が 3 つある**（§3 で詰める）。
 
   | 未決 | 内容 |
   | --- | --- |
@@ -1242,7 +907,7 @@ stateDiagram-v2
   | 締切の年 | `08-15` は年を持たない。日付として解釈するなら年の補完規則（直近の未来 / 当年）を決める必要がある。現状は解釈していないので問題が表面化していない |
   | 認識できない要素 | `（45分・仮）` の `仮` の扱い。本文に戻す / 落とす / 残差として保つ、のいずれか。現状は `meta` 文字列に含まれている |
 
-## 12. 拡張の指針
+## 11. 拡張の指針
 
 - **新しい事実を足すときは `PjProject` に、判断を足すときは利用側に。** 「機械的に決まるか」が判定基準（P3）。`health` を増やしたくなったら、まずそれが `PjNote` のフィールドから決定的に導けるかを確かめる。導けないなら skill 側に置く。
 - **`parser-core` に `std::fs` / `std::process` / 現在時刻を持ち込まない。** 基準日が要るなら引数で受ける。WASM ターゲットでリンクできなくなるという実際的な制約でもある。

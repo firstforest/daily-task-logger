@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **[docs/requirements.md](docs/requirements.md)** — 要求仕様。Markdown フォーマット、ファイル単位の自動タグ、Wiki リンク、各機能・コマンド・設定・CLI サブコマンド・ジャーナルのパス規約など。
 - **[docs/architecture.md](docs/architecture.md)** — 全体構成、Cargo ワークスペース構成、パースパイプライン、主要ソースファイル、ビルド構成・配布フロー。
-- **[docs/design.md](docs/design.md)** — ドメインモデル。概念モデル（Document / Project / Task / Log / Observation の関係、目標形）、Rust の型定義、表層構文（EBNF）、走査のセマンティクス、不変条件（I-1〜I-22）、写像の事前条件、既知の弱さ（W-1〜W-8）、概念とのずれ（G-1〜G-12）。
+- **[docs/domain.md](docs/domain.md)** — ドメインモデル（**目標形**）。Document / Project / Task / Log / Observation に何があり、どう関係するか。エンティティ、Project の役割、関係の 4 層、同一性と参照の解決、観測値の導出。
+- **[docs/design.md](docs/design.md)** — 現状の実装。設計原則（P1〜P5）、語彙と Rust 表現、表層構文（EBNF）、走査のセマンティクス、Rust の型定義、不変条件（I-1〜I-22）、写像の事前条件、既知の弱さ（W-1〜W-8）、ドメインモデルとのずれ（G-1〜G-12）。
 
 機能・フォーマット・設定・アーキテクチャに関する記述を更新する場合は、上記 docs を更新すること（本ファイルには重複させない）。
 
