@@ -74,29 +74,35 @@ impl PjNote {
 }
 
 // 正規表現は行ごと・メタデータ要素ごとに引かれるので、初回だけコンパイルして使い回す。
+//
+// 行の構造を区切る空白は `\s` ではなく `[ \t]` で書く。`\s` は Unicode 空白（全角
+// スペース U+3000 など）にも一致するので、`　- [ ] 本文` がタスクになってしまう。
+// 記法上の空白は半角スペースとタブだけ（docs/syntax.md §3）。
 
 fn heading_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.*)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^(#{1,6})[ \t]+(.*)").unwrap())
 }
 
 fn fence_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\s*(```|~~~)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[ \t]*(```|~~~)").unwrap())
 }
 
 /// タスク行（`- [ ]` / `- [x]` / `- [-]`）。`- [[ノート名]]` は `[` の次が `[` なので一致しない。
 fn task_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\s*-\s*\[([ x-])\]\s*(.*)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[ \t]*-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap())
 }
 
 /// ログ行（`- YYYY-MM-DD: 内容`）。時刻・時間範囲付きも許容する。
 fn log_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^\s*-\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:\s*(.*)")
-            .unwrap()
+        Regex::new(
+            r"^[ \t]*-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)",
+        )
+        .unwrap()
     })
 }
 
@@ -105,20 +111,21 @@ fn log_re() -> &'static Regex {
 fn timed_log_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^(\s*)-\s*(\d{4}-\d{2}-\d{2})\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?:").unwrap()
+        Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?:")
+            .unwrap()
     })
 }
 
 /// インデント付きのタスク行。`task_re` と同じ判定だが先頭の空白を取る。
 fn indented_task_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^(\s*)-\s*\[([ x-])\]\s*(.*)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap())
 }
 
 /// 箇条書き行（`- 内容`）。
 fn bullet_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\s*-\s+(.*)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[ \t]*-[ \t]+(.*)").unwrap())
 }
 
 /// 行末の括弧（`（45分・重・@PC）`）。
@@ -345,9 +352,40 @@ pub fn collect_refs(text: &str) -> Vec<String> {
     refs
 }
 
-/// 行頭の空白幅。タスク行・ログ行の `^(\s*)` キャプチャと同じ数え方に揃える。
+/// 文書全体から参照を集める。コードフェンスの中は数えない。
+///
+/// 「言及」の判定に使う。ファイル全文へ一気に `collect_refs` を掛けるとフェンス内も
+/// 拾ってしまい、記法の例としてコードブロックに書いた `[[名前]]` で `journal_last` が
+/// 更新される。フェンス内は全解析から除外する（docs/syntax.md §2.3）。
+///
+/// 実働側（`journal_work`）もフェンスを飛ばしたうえでタスク行の本文に `collect_refs`
+/// を掛けるので、タスク行はここで拾う行の部分集合になり「実働 ⊆ 言及」が保たれる。
+pub fn collect_document_refs(lines: &[String]) -> Vec<String> {
+    let fence = fence_re();
+    let mut refs: Vec<String> = Vec::new();
+    let mut in_code_block = false;
+
+    for line in lines {
+        if fence.is_match(line) {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            continue;
+        }
+        refs.extend(collect_refs(line));
+    }
+
+    refs
+}
+
+/// 行頭の空白幅。タスク行・ログ行の `^([ \t]*)` キャプチャと同じ数え方に揃える。
+///
+/// `trim_start` は Unicode 空白まで落とすので使えない。全角スペースで字下げした行は
+/// 正規表現側ではインデント 0 になるため、ここで 3（UTF-8 のバイト数）を返すと
+/// 帰属の判定が食い違う。
 fn indent_width(line: &str) -> usize {
-    line.len() - line.trim_start().len()
+    line.len() - line.trim_start_matches([' ', '\t']).len()
 }
 
 /// journal 1日分の本文から「実働」を取り出す。
@@ -939,5 +977,61 @@ mod tests {
         let works = journal_work(&l, "2026-08-01");
         assert_eq!(work_dates(&works, "子PJ"), ["2026-08-01"]);
         assert!(work_dates(&works, "親PJ").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_full_width_space_indent_does_not_attach() {
+        // 全角スペース字下げのログはログ行に一致しないので実働にならない。
+        // `indent_width` と正規表現のインデントが同じ数え方であることの裏取りでもある
+        let l = lines(&[
+            "- [ ] [[在庫管理]] を進める",
+            "　- 2026-08-01 10:00: 全角スペース字下げ",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    // --- collect_document_refs ---
+
+    #[test]
+    fn test_collect_document_refs_collects_links_and_tags() {
+        let l = lines(&[
+            "# 2026-08-01",
+            "- [ ] [[在庫管理]] を進める",
+            "本文中の #永夜 にも触れた",
+        ]);
+        let refs = collect_document_refs(&l);
+        assert!(refs.contains(&"在庫管理".to_string()));
+        assert!(refs.contains(&"永夜".to_string()));
+    }
+
+    #[test]
+    fn test_collect_document_refs_ignores_code_block() {
+        // 記法の例として ``` の中に書いた参照は言及にしない
+        let l = lines(&[
+            "# 2026-08-01",
+            "```markdown",
+            "- [ ] [[在庫管理]] を進める例",
+            "#永夜 の書き方",
+            "```",
+        ]);
+        assert!(collect_document_refs(&l).is_empty());
+    }
+
+    #[test]
+    fn test_collect_document_refs_resumes_after_code_block() {
+        let l = lines(&["```", "[[コード内]]", "```", "本文の [[在庫管理]]"]);
+        assert_eq!(collect_document_refs(&l), ["在庫管理"]);
+    }
+
+    #[test]
+    fn test_collect_document_refs_superset_of_journal_work_refs() {
+        // 実働 ⊆ 言及（I-17）。実働側が拾う参照は必ず言及側にも現れる
+        let l = lines(&["# 2026-08-01", "- [x] [[在庫管理]] を進める #永夜"]);
+        let doc_refs = collect_document_refs(&l);
+        for w in journal_work(&l, "2026-08-01") {
+            for r in w.refs {
+                assert!(doc_refs.contains(&r), "{r} が言及側に無い");
+            }
+        }
     }
 }

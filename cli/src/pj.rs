@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
-use parser_core::pj::{collect_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
+use parser_core::pj::{collect_document_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
 use parser_core::{parse_front_matter, ProjectStatus};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
@@ -272,12 +272,14 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
+        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
 
         if !remaining_mention.is_empty() {
             // 参照の拾い方は実働側（`journal_work`）と同じ `collect_refs` に揃える。
             // 片方だけが `[[名前.md]]` を拾うと「実働はあるのに言及が null」という
-            // 成り立たない組み合わせが出る（実働は言及の部分集合）
-            let refs: HashSet<String> = collect_refs(&content).into_iter().collect();
+            // 成り立たない組み合わせが出る（実働は言及の部分集合）。
+            // フェンス内を飛ばす点も実働側と揃える（`collect_document_refs`）
+            let refs: HashSet<String> = collect_document_refs(&lines).into_iter().collect();
 
             for (name, tag) in &targets {
                 if !remaining_mention.contains(name.as_str()) {
@@ -293,7 +295,6 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
         if remaining_work.is_empty() {
             continue;
         }
-        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
         // 参照名 → そのファイルでの最新の実働日。時刻付きログは自分の日付を持つので、
         // ファイル名の日付と一致しないことがある
         let works = journal_work(&lines, &date);

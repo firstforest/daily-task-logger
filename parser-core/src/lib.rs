@@ -129,9 +129,9 @@ pub struct ScheduleEntry {
 // === Parsing logic ===
 
 pub fn parse_tasks_internal(lines: &[String], target_date: &str) -> Vec<ParsedTask> {
-    let task_re = Regex::new(r"^(\s*)-\s*\[([ x-])\]\s*(.*)").unwrap();
-    let date_re = Regex::new(r"^(\s*)-\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:\s*(.*)").unwrap();
-    let fence_re = Regex::new(r"^\s*(```|~~~)").unwrap();
+    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
+    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
+    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
 
     let mut tasks: Vec<ParsedTask> = Vec::new();
     let mut current_task: Option<CurrentTask> = None;
@@ -179,10 +179,10 @@ pub fn parse_tasks_internal(lines: &[String], target_date: &str) -> Vec<ParsedTa
 }
 
 pub fn parse_all_dates_internal(lines: &[String]) -> Vec<ParsedTaskWithDate> {
-    let task_re = Regex::new(r"^(\s*)-\s*\[([ x-])\]\s*(.*)").unwrap();
-    let date_re = Regex::new(r"^(\s*)-\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:\s*(.*)").unwrap();
-    let heading_re = Regex::new(r"^(#{1,6})\s+(.*)").unwrap();
-    let fence_re = Regex::new(r"^\s*(```|~~~)").unwrap();
+    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
+    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
+    let heading_re = Regex::new(r"^(#{1,6})[ \t]+(.*)").unwrap();
+    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
 
     let mut tasks: Vec<ParsedTaskWithDate> = Vec::new();
     let mut current_task: Option<CurrentTask> = None;
@@ -444,19 +444,31 @@ fn pad_time(time: &str) -> String {
 }
 
 pub fn parse_schedule_internal(lines: &[String], target_date: &str) -> Vec<ScheduleEntry> {
-    let task_re = Regex::new(r"^(\s*)-\s*\[([ x-])\]\s*(.*)").unwrap();
+    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
     let date_re =
-        Regex::new(r"^(\s*)-\s*(\d{4}-\d{2}-\d{2})(?:\s+(\d{1,2}:\d{2})(?:-(\d{1,2}:\d{2}))?)?:\s*(.*)").unwrap();
-    let time_memo_re = Regex::new(r"^- (\d{1,2}:\d{2}): (.+)").unwrap();
-    let heading_date_re = Regex::new(r"^#\s+(\d{4}-\d{2}-\d{2})").unwrap();
-    let fence_re = Regex::new(r"^\s*(```|~~~)").unwrap();
+        Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+(\d{1,2}:\d{2})(?:-(\d{1,2}:\d{2}))?)?:[ \t]*(.*)").unwrap();
+    let time_memo_re = Regex::new(r"^-[ \t](\d{1,2}:\d{2}):[ \t](.+)").unwrap();
+    let heading_date_re = Regex::new(r"^#[ \t]+(\d{4}-\d{2}-\d{2})").unwrap();
+    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
 
-    // ジャーナルファイルの日付見出しが target_date と一致するか判定
-    let is_target_date_file = lines.iter().any(|line| {
-        heading_date_re
-            .captures(line)
-            .map_or(false, |caps| &caps[1] == target_date)
-    });
+    // ジャーナルファイルの日付見出しが target_date と一致するか判定。
+    // フェンス内は全解析から除外するので、ここでも走査しながら内外を追う
+    // （記法の例として ``` の中に書いた `# YYYY-MM-DD` で時刻メモを発火させない）
+    let is_target_date_file = {
+        let mut in_code_block = false;
+        lines.iter().any(|line| {
+            if fence_re.is_match(line) {
+                in_code_block = !in_code_block;
+                return false;
+            }
+            if in_code_block {
+                return false;
+            }
+            heading_date_re
+                .captures(line)
+                .is_some_and(|caps| &caps[1] == target_date)
+        })
+    };
 
     let mut entries: Vec<ScheduleEntry> = Vec::new();
     let mut current_task: Option<CurrentTask> = None;
@@ -958,6 +970,50 @@ mod tests {
         assert_eq!(result[0].context, vec!["本物の見出し"]);
     }
 
+    // --- 記法上の空白は半角スペースとタブだけ（docs/syntax.md §3） ---
+
+    #[test]
+    fn test_full_width_space_indent_is_not_a_task() {
+        // `\s` は全角スペースにも一致するので、放っておくと `　- [ ] 本文` が
+        // タスクになる。Markdown のリストでもないものを拾わない
+        let l = lines(&["　- [ ] 全角スペース字下げ"]);
+        assert_eq!(parse_all_dates_internal(&l).len(), 0);
+    }
+
+    #[test]
+    fn test_full_width_space_between_marker_and_checkbox_is_not_a_task() {
+        let l = lines(&["-　[ ] 全角スペース区切り"]);
+        assert_eq!(parse_all_dates_internal(&l).len(), 0);
+    }
+
+    #[test]
+    fn test_full_width_space_indented_log_does_not_attach() {
+        // タスクは字下げ無し、ログは全角スペース字下げ。ログ行としても一致しないので、
+        // タスクは「ログを持たない」= 日付なし 1 件になる
+        let l = lines(&["- [ ] タスク", "　- 2026-02-01: ログ"]);
+        let result = parse_all_dates_internal(&l);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].date, "");
+        assert_eq!(result[0].log, "");
+    }
+
+    #[test]
+    fn test_tab_indent_attaches_log() {
+        let l = lines(&["- [ ] タスク", "\t- 2026-02-01: ログ"]);
+        let result = parse_all_dates_internal(&l);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].date, "2026-02-01");
+        assert_eq!(result[0].log, "ログ");
+    }
+
+    #[test]
+    fn test_full_width_space_heading_is_not_a_heading() {
+        let l = lines(&["#　全角スペース見出し", "- [ ] タスク"]);
+        let result = parse_all_dates_internal(&l);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].context.is_empty());
+    }
+
     // --- parse_all_dates_internal context tests ---
 
     #[test]
@@ -1409,6 +1465,49 @@ mod tests {
     fn test_parse_schedule_time_memo_no_heading_ignored() {
         // 日付見出しがないファイルでは時刻メモを拾わない
         let l = lines(&["- 09:30: メモ"]);
+        let result = parse_schedule_internal(&l, "2026-03-21");
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_schedule_time_memo_heading_in_code_block_ignored() {
+        // フェンス内の日付見出しは見出しではないので、時刻メモを発火させない。
+        // 記法の例をコードブロックに書いただけのファイルが journal 扱いになるのを防ぐ
+        let l = lines(&["```markdown", "# 2026-03-21", "```", "", "- 09:30: メモ"]);
+        let result = parse_schedule_internal(&l, "2026-03-21");
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_schedule_time_memo_heading_after_code_block_fires() {
+        // フェンスを閉じた後の日付見出しは通常どおり効く
+        let l = lines(&[
+            "```markdown",
+            "# 2026-03-20",
+            "```",
+            "# 2026-03-21",
+            "",
+            "- 09:30: メモ",
+        ]);
+        let result = parse_schedule_internal(&l, "2026-03-21");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].log_text, "メモ");
+    }
+
+    #[test]
+    fn test_parse_schedule_time_memo_accepts_tab_separator() {
+        // 記法上の空白は半角スペースとタブ（docs/syntax.md §3）
+        let l = lines(&["# 2026-03-21", "", "-\t09:30:\tタブ区切りのメモ"]);
+        let result = parse_schedule_internal(&l, "2026-03-21");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].time, "09:30");
+        assert_eq!(result[0].log_text, "タブ区切りのメモ");
+    }
+
+    #[test]
+    fn test_parse_schedule_time_memo_rejects_full_width_space() {
+        // 全角スペースは記法上の空白ではない
+        let l = lines(&["# 2026-03-21", "", "-　09:30:　全角区切り"]);
         let result = parse_schedule_internal(&l, "2026-03-21");
         assert_eq!(result.len(), 0);
     }

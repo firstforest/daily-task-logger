@@ -892,6 +892,53 @@ fn test_journal_mention_matches_work_link_normalization() {
     );
 }
 
+/// コードフェンスの中に書いた参照が言及にならないこと。
+///
+/// フェンス内は全解析から除外する（docs/syntax.md §2.3）。記法の例を journal に
+/// 貼っただけの PJ が「言及された」ことになると、停滞の判定が効かなくなる。
+#[test]
+fn test_journal_mention_ignores_code_block() {
+    let home = TempHome::new("journal-fence");
+    let root = home.path();
+
+    write_note(
+        root,
+        "フェンスPJ",
+        "---\nproject: active\n---\n# フェンスPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    write_note(
+        root,
+        "本文PJ",
+        "---\nproject: active\n---\n# 本文PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n\
+         書き方の例:\n\n\
+         ```markdown\n\
+         - [ ] [[フェンスPJ]] を進める\n\
+         ```\n\n\
+         - [ ] [[本文PJ]] を進める\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+
+    let fenced = find(&json, "フェンスPJ");
+    assert_eq!(
+        fenced["journal_last"],
+        serde_json::Value::Null,
+        "フェンス内の参照を言及として拾ってはいけない"
+    );
+
+    let plain = find(&json, "本文PJ");
+    assert_eq!(
+        plain["journal_last"], "2026-07-30",
+        "フェンスを閉じた後の参照は通常どおり拾う"
+    );
+}
+
 /// 候補に並べた PJ が、別セクションの無関係な時刻メモで実働扱いにならないこと。
 #[test]
 fn test_candidate_list_is_not_work_despite_timed_note() {
