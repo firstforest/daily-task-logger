@@ -822,7 +822,7 @@ domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。�
   | `ParsedTaskWithDate` | タスクとログを 1 構造体に平坦化し、帰属していることを前提にしている |
   | `ScheduleEntry` | 帰属の有無を `task_text.is_empty()` で判別する（全域でない — W-3） |
   | `pj::PjLogEntry` | 帰属の概念自体が無い（`## ログ` は元から帰属しないので困っていない） |
-- 目標: domain.md §1 の `Log { date, time, text }` 1 つと、関係 `attach(log) : Option<Task>`。時刻を構造として持てば実働判定は正規表現をもう 1 本引くのではなく `log.time.is_some()` になり、帰属を `Option` で持てば W-3 の判別子が全域になる。
+- 目標: domain.md §1 の `Log { at, when, duration, text }` 1 つと、関係 `attach(log) : Option<Task>`。時刻を `When` として構造で持てば実働判定は正規表現をもう 1 本引くのではなく「`log.when` が `Moment` か」になり、帰属を `Option` で持てば W-3 の判別子が全域になる。
 - 影響: `ParsedTaskWithDate` は境界型なので JSON / WASM の表現が変わる。P5 と W-2 の制約下では、利用側（VS Code 拡張・CLI の両方）の同時修正が要る変更になる。
 
 **G-8 Document がヘッダを持たず、呼び出し側が付随情報を渡している。**
