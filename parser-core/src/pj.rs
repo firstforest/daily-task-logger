@@ -100,6 +100,21 @@ fn log_re() -> &'static Regex {
     })
 }
 
+/// 時刻付きログ行（`- YYYY-MM-DD HH:MM: 内容` / `- YYYY-MM-DD HH:MM-HH:MM: 内容`）。
+/// 時刻の無いログは一致しない。インデントを取るので `log_re` とは別に引く。
+fn timed_log_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(\s*)-\s*(\d{4}-\d{2}-\d{2})\s+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?:").unwrap()
+    })
+}
+
+/// インデント付きのタスク行。`task_re` と同じ判定だが先頭の空白を取る。
+fn indented_task_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(\s*)-\s*\[([ x-])\]\s*(.*)").unwrap())
+}
+
 /// 箇条書き行（`- 内容`）。
 fn bullet_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -303,6 +318,88 @@ pub fn parse_pj_note(lines: &[String]) -> PjNote {
         logs: extract_logs(sections.get(SECTION_LOG)),
         backlog: extract_backlog(sections.get(SECTION_BACKLOG)),
     }
+}
+
+// === journal の実働 ===
+
+/// journal から拾った「実働」1件。
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct JournalWork {
+    /// 実働と判定した日付
+    pub date: String,
+    /// そのタスク行が参照している名前（`[[名前]]` の中身と `#タグ`）
+    pub refs: Vec<String>,
+}
+
+/// タスク行が参照している名前を集める。`[[名前]]` と `#タグ` の両方を拾う。
+fn task_refs(text: &str) -> Vec<String> {
+    let mut refs: Vec<String> = crate::wiki_link::parse_wiki_links(text)
+        .into_iter()
+        .map(|m| crate::wiki_link::normalize_wiki_name(&m.name).name)
+        .collect();
+    refs.extend(crate::extract_tags(text));
+    refs
+}
+
+/// journal 1日分の本文から「実働」を取り出す。
+///
+/// `## 今日の候補` に載っただけ・他タスクの文中で触れられただけの「言及」と区別するため、
+/// 参照を持つタスク行そのものが次のいずれかを満たす場合だけ実働と見なす。
+///
+/// - `- [x]` で完了している → その journal の日付（`file_date`）
+/// - 時刻付きログ（`- YYYY-MM-DD HH:MM: ...`）を持つ → そのログ行の日付
+///
+/// 時刻の無いログ（`- YYYY-MM-DD: ...`）は実働と見なさない。journal では
+/// 「やった記録」ではなく予定・メモとしても書かれるため。
+pub fn journal_work(lines: &[String], file_date: &str) -> Vec<JournalWork> {
+    let task = indented_task_re();
+    let timed = timed_log_re();
+    let fence = fence_re();
+
+    let mut result: Vec<JournalWork> = Vec::new();
+    // 参照を持つタスク行の (インデント, 参照名)。参照を持たないタスク行が来たら閉じる
+    let mut current: Option<(usize, Vec<String>)> = None;
+    let mut in_code_block = false;
+
+    for line in lines {
+        if fence.is_match(line) {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            continue;
+        }
+
+        if let Some(caps) = task.captures(line) {
+            let refs = task_refs(&caps[3]);
+            if refs.is_empty() {
+                current = None;
+                continue;
+            }
+            if &caps[2] == "x" {
+                result.push(JournalWork {
+                    date: file_date.to_string(),
+                    refs: refs.clone(),
+                });
+            }
+            current = Some((caps[1].len(), refs));
+            continue;
+        }
+
+        if let Some((indent, refs)) = current.as_ref() {
+            if let Some(caps) = timed.captures(line) {
+                // ログ行はタスク行より深いインデントであることを必須にする
+                if caps[1].len() > *indent {
+                    result.push(JournalWork {
+                        date: caps[2].to_string(),
+                        refs: refs.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    result
 }
 
 // === Tests ===
@@ -622,5 +719,136 @@ mod tests {
         let pj = parse_pj_note(&l);
         assert_eq!(pj.logs.len(), 2);
         assert_eq!(pj.log_last(), Some("2026-07-31"));
+    }
+
+    // --- journal_work ---
+
+    /// 日付の重複を潰して、参照名ごとの実働日を取り出すテスト用ヘルパ。
+    fn work_dates(works: &[JournalWork], name: &str) -> Vec<String> {
+        let mut dates: Vec<String> = works
+            .iter()
+            .filter(|w| w.refs.iter().any(|r| r == name))
+            .map(|w| w.date.clone())
+            .collect();
+        dates.sort();
+        dates.dedup();
+        dates
+    }
+
+    #[test]
+    fn test_journal_work_completed_task() {
+        let l = lines(&["# 2026-08-01", "- [x] [[永夜]] のカードを作る"]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+    }
+
+    #[test]
+    fn test_journal_work_incomplete_with_timed_log() {
+        // 完了していなくても時刻付きログがあれば実働
+        let l = lines(&[
+            "# 2026-08-01",
+            "- [ ] [[永夜]] のカードを作る",
+            "    - 2026-08-01 10:00-11:30: 下書きまで",
+        ]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+    }
+
+    #[test]
+    fn test_journal_work_mention_only_is_not_work() {
+        // 「今日の候補」に載っただけ・文中で触れただけは実働ではない（誤検出の元）
+        let l = lines(&[
+            "# 2026-08-01",
+            "## 今日の候補",
+            "- [ ] [[在庫管理]] を進める",
+            "- [ ] 別のタスク（[[在庫管理]] とも関係する）",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_untimed_log_is_not_work() {
+        // 時刻の無いログは予定・メモとしても書かれるので実働と見なさない
+        let l = lines(&[
+            "# 2026-08-01",
+            "- [ ] [[在庫管理]] を進める",
+            "    - 2026-08-01: あとでやる",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_cancelled_task_is_not_work() {
+        // 見送り（着手せず）は実働ではない
+        let l = lines(&["# 2026-08-01", "- [-] [[在庫管理]] を進める"]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_by_tag() {
+        let l = lines(&["# 2026-08-01", "- [x] カードを作る #永夜"]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+        // 前方一致で誤爆しない
+        assert!(work_dates(&works, "永夜祭").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_uses_log_date_not_file_date() {
+        // 時刻付きログは自分の日付を持っているのでそちらを採る
+        let l = lines(&[
+            "# 2026-08-01",
+            "- [ ] [[永夜]] を進める",
+            "    - 2026-07-31 22:00: 前日の作業",
+        ]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-07-31"]);
+    }
+
+    #[test]
+    fn test_journal_work_log_must_be_indented_deeper() {
+        // タスクと同じ深さのログ行はそのタスクのものではない
+        let l = lines(&[
+            "- [ ] [[永夜]] を進める",
+            "- 2026-08-01 10:00: 無関係のメモ",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_log_after_unlinked_task_is_not_attributed() {
+        // 参照を持たないタスク行が来たら文脈を閉じる（次のログを取り違えない）
+        let l = lines(&[
+            "- [ ] [[永夜]] を進める",
+            "- [ ] 無関係のタスク",
+            "    - 2026-08-01 10:00: 無関係の作業",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_multiple_refs_on_one_task() {
+        let l = lines(&["- [x] [[永夜]] と [[在庫管理]] をまとめて片付けた"]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+        assert_eq!(work_dates(&works, "在庫管理"), ["2026-08-01"]);
+    }
+
+    #[test]
+    fn test_journal_work_ignores_code_block() {
+        let l = lines(&[
+            "```markdown",
+            "- [x] [[永夜]] のサンプル記法",
+            "```",
+            "- [ ] 何もしていない",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_strips_md_extension_from_link() {
+        let l = lines(&["- [x] [[永夜.md]] を進めた"]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
     }
 }
