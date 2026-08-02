@@ -186,10 +186,12 @@ logs(pj)   = { l ∈ Logs(pj) | attach(l) = None }    -- 帰属しない Log 全
 planned(t) = t.schedule ≠ None ∨ t.contexts ≠ ∅ ∨ t.deadline ≠ None    -- §1
 todos(pj)  = { t ∈ tasks(pj) | t.status = Todo }
 
-health(pj) = NoNext      ⟺ todos(pj) = ∅
+health(pj) = NoTodo      ⟺ todos(pj) = ∅
            | Unclarified ⟺ todos(pj) ≠ ∅ ∧ ∀ t ∈ todos(pj). ¬planned(t)
            | Ok          ⟺ ∃ t ∈ todos(pj). planned(t)
 ```
+
+**`NoNext` を `NoTodo` に改名する。** 現状の名前は `next_action` に由来するが、その概念はこの節で消える。判定しているのは「未完了 Task が 1 つも無い」ことなので、名前も `todos(pj)` に揃える。出力値（`no-next`）も変わるので、利用側の同時修正が要る（design.md G-10）。
 
 計画上の属性は Task が持つので、`taski list` と `taski pj` は同じ抽出を共有する（design.md P4）。「次に何をするか決まっているか」という `health` の意味は変わらないが、属性が構造化されるぶん**何が決まっていないか**まで言えるようになる。`planned` をこの粗さのままにするかは未決である（design.md G-12）。
 

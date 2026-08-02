@@ -851,6 +851,7 @@ domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。�
   | --- | --- |
   | 書式の規約 | 「チェックボックスは `## 次の予定` だけ」が不要になる。PJ ノートが複数の Task を持てるようになり、それらは `taski list` の「日付なし」グループに出る。絞り込みはビュー側の責務とする（G-1 と同じ結論） |
   | 出力契約 | `taski pj` から `next_action` / `next_action_body` / `next_action_meta` / `next_action_ai` / `backlog` / `backlog_count` が消え、未完了 Task の列（位置つき）が入る。`cli/AGENTS.md` と利用側 skill の同時修正が要る |
+  | `health` の名前 | `PjHealth::NoNext` が `NoTodo` になる（domain.md §2）。判定しているのは「未完了 Task が 1 つも無い」ことで、`next_action` 由来の名前は概念ごと消える。JSON の値も `no-next` → `no-todo` に変わるので、これも出力契約の一部である（W-7） |
   | 実装 | `split_sections` / `extract_next_action` / `extract_backlog` が不要になる。`extract_logs` は「帰属しない Log」の抽出に変わる |
   | 不変条件 | §6 の I-11 は `tasks(pj)` ベースに書き換え、I-12 / I-13 / I-15 は対象が消えるので削除になる |
   | 誤検出 | 説明文中に日付行（`2026-08-01: 締切` など）を書くとログとして拾われる。セクションによる隔離が無くなるため、`## ログ` の外に書いた記録も拾えるようになるのと表裏である |
