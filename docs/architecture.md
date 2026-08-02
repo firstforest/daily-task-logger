@@ -1,6 +1,6 @@
 # taski アーキテクチャ
 
-本ドキュメントは taski の構成・設計方針をまとめたものである。要求そのものは [requirements.md](requirements.md) を参照。
+本ドキュメントは taski の構成・設計方針をまとめたものである。要求そのものは [requirements.md](requirements.md) を、各クレートが持つ型・不変条件は [design.md](design.md) を参照。
 
 ## 全体構成
 
@@ -40,6 +40,8 @@ taski は VS Code 拡張と Rust CLI の 2 つのフロントエンドを持ち�
 - 拡張本体は VS Code API 以外のランタイム依存を持たない。`vscode` モジュールは esbuild で external 指定。
 
 ## パースパイプライン
+
+各関数の型・事前条件・出力の不変条件は [design.md](design.md) にまとめてある。ここでは並びだけを示す。
 
 `parser-core/src/lib.rs` の主要な公開関数:
 
