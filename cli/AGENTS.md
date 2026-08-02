@@ -367,13 +367,13 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
 - `has_remote` — `repo:` のリポジトリに remote が設定されているか。`false` なら**リモートにバックアップが無い**。`repo:` が無い / パスが存在しない / git リポジトリでないときは `null`
 - `ahead_count` — remote に push されていないコミット数（ローカルの全ブランチから辿れて remote から辿れないもの）。remote が無ければ `null`。ブランチごとの upstream 設定には依存しないので、upstream 未設定の作業ブランチも数える
 - `journal_last` / `journal_days` — journal で `[[PJ名]]` / `#PJ名` により最後に**言及**された日と経過日数。`## 今日の候補` に載っただけ・文中で触れられただけでも動く
-- `journal_work_last` / `journal_work_days` — journal で最後に**実働**があった日と経過日数。参照を持つタスク行が `- [x]` になった日、またはそのタスクが時刻付きログ（`- YYYY-MM-DD HH:MM: ...`）を持つ日
+- `journal_work_last` / `journal_work_days` — journal で最後に**実働**があった日と経過日数。参照を持つタスク行が `- [x]` になった日、またはそのタスクが時刻付きログ（`- YYYY-MM-DD HH:MM: ...`）を持つ日。ログはそのタスクの配下（より深いインデント）にあるものだけを見るので、別セクションの時刻メモは実働にならない
 - `backlog_count` / `backlog` — `## オープンタスク` の項目
 - `logs` — 直近のログ（最大3件、新しい順）。再開時のコンテキストとして使う
 
 日付が取れない場合（ログが1件も無い、`repo:` のパスが存在しない等）は該当フィールドが `null` になる。停滞（`stale_days` / `log_days`）と言及（`journal_days`）は別々に持つ。合成すると「候補に載っただけで停滞0日」になり実態が見えなくなるため。
 
-**言及と実働は別物。** 未反映検出のように「本当に手が動いたか」を見たい判定では `journal_last` ではなく `journal_work_last` を使う。`journal_last` は候補に挙げただけでも更新されるので、note で完結する PJ が毎回「動いている」と誤判定される。
+**言及と実働は別物。** 未反映検出のように「本当に手が動いたか」を見たい判定では `journal_last` ではなく `journal_work_last` を使う。`journal_last` は候補に挙げただけでも更新されるので、note で完結する PJ が毎回「動いている」と誤判定される。実働は言及の部分集合なので、`journal_work_last` があって `journal_last` が `null` になることはない。
 
 **table の並び順と印:**
 
