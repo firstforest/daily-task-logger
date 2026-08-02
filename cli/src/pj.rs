@@ -15,9 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
-use parser_core::pj::{parse_pj_note, PjHealth, PjLogEntry};
+use parser_core::pj::{collect_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
 use parser_core::{parse_front_matter, ProjectStatus};
-use regex::Regex;
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -28,6 +27,9 @@ pub struct PjProject {
     pub path: String,
     pub status: String,
     pub repo: Option<String>,
+    /// `repo:` を home 展開・正規化した絶対パス。存在しなければ `None`。
+    /// 利用側（セッションの `cwd` との突き合わせ等）に展開ロジックを再実装させないために出す
+    pub repo_abs: Option<String>,
     pub completed: Option<String>,
     pub next_action: Option<String>,
     pub next_action_body: Option<String>,
@@ -44,8 +46,16 @@ pub struct PjProject {
     /// リポジトリにコミットがあるのに PJ ノートのログに反映されていないか
     pub unreported: bool,
     pub unreported_count: usize,
+    /// `repo:` のリポジトリに remote が設定されているか。リポジトリが無い / git でないなら `None`
+    pub has_remote: Option<bool>,
+    /// remote に push されていないコミット数。remote 無し（`has_remote` が false / null）なら `None`
+    pub ahead_count: Option<usize>,
+    /// journal で最後に「言及」された日（`[[名前]]` / `#タグ`）
     pub journal_last: Option<String>,
     pub journal_days: Option<i64>,
+    /// journal で最後に「実働」があった日。言及とは分けて持つ（[`parser_core::pj::journal_work`]）
+    pub journal_work_last: Option<String>,
+    pub journal_work_days: Option<i64>,
     pub backlog_count: usize,
     pub backlog: Vec<String>,
     /// 再開時のコンテキストとして使う直近のログ
@@ -218,32 +228,42 @@ fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// journal で各 PJ が最後に言及された日を取る。
+/// journal から取れる PJ ごとの日付。
 ///
-/// 新しい日付から順に見て、全 PJ が見つかった時点で打ち切る。
+/// 「言及」と「実働」を分けて持つ。言及だけを見ると、`## 今日の候補` に載っただけ・
+/// 他タスクの文中で触れられただけの PJ まで「動いている」ように見えてしまう。
+/// 停滞と言及を分けているのと同じ理由で、言及と実働も分ける。
+struct JournalDates {
+    /// `[[名前]]` / `#タグ` で最後に言及された日
+    mention: HashMap<String, String>,
+    /// 実働（完了したタスク・時刻付きログ）が最後にあった日
+    work: HashMap<String, String>,
+}
+
+/// journal で各 PJ が最後に言及された日と、最後に実働があった日を取る。
+///
+/// 新しい日付から順に見て、全 PJ の両方が見つかった時点で打ち切る。
+/// 言及と実働で同じファイルを2度読まないよう、1回の走査でまとめて集める。
 /// 基準日より後の journal（明日のタスクを先に書いた場合など）は見ない。
 /// 空白を含む PJ 名は `#タグ` で書けないので、実質 `[[名前]]` のみが効く。
-fn journal_last_mentions(
-    base_dir: &Path,
-    names: &[String],
-    today: &str,
-) -> HashMap<String, String> {
-    let mut result: HashMap<String, String> = HashMap::new();
+fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates {
+    let mut mention: HashMap<String, String> = HashMap::new();
+    let mut work: HashMap<String, String> = HashMap::new();
     if names.is_empty() {
-        return result;
+        return JournalDates { mention, work };
     }
 
-    let tag_re = Regex::new(r"#([^\s#]+)").unwrap();
-    // PJ 名 → (`[[名前]]` の検索文字列, ファイル単位タグ)
-    let targets: Vec<(String, String, String)> = names
+    // PJ 名 → ファイル単位タグ（`#タグ` は空白を書けないので `_` 区切り）
+    let targets: Vec<(String, String)> = names
         .iter()
-        .map(|name| (name.clone(), format!("[[{name}]]"), name.replace(' ', "_")))
+        .map(|name| (name.clone(), name.replace(' ', "_")))
         .collect();
 
-    let mut remaining: HashSet<&str> = targets.iter().map(|(n, _, _)| n.as_str()).collect();
+    let mut remaining_mention: HashSet<&str> = targets.iter().map(|(n, _)| n.as_str()).collect();
+    let mut remaining_work: HashSet<&str> = remaining_mention.clone();
 
     for (date, path) in journal_files_desc(base_dir) {
-        if remaining.is_empty() {
+        if remaining_mention.is_empty() && remaining_work.is_empty() {
             break;
         }
         if is_future(&date, today) {
@@ -252,23 +272,68 @@ fn journal_last_mentions(
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        let tags: HashSet<&str> = tag_re
-            .captures_iter(&content)
-            .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
-            .collect();
 
-        for (name, link, tag) in &targets {
-            if !remaining.contains(name.as_str()) {
+        if !remaining_mention.is_empty() {
+            // 参照の拾い方は実働側（`journal_work`）と同じ `collect_refs` に揃える。
+            // 片方だけが `[[名前.md]]` を拾うと「実働はあるのに言及が null」という
+            // 成り立たない組み合わせが出る（実働は言及の部分集合）
+            let refs: HashSet<String> = collect_refs(&content).into_iter().collect();
+
+            for (name, tag) in &targets {
+                if !remaining_mention.contains(name.as_str()) {
+                    continue;
+                }
+                if refs.contains(name.as_str()) || refs.contains(tag.as_str()) {
+                    mention.insert(name.clone(), date.clone());
+                    remaining_mention.remove(name.as_str());
+                }
+            }
+        }
+
+        if remaining_work.is_empty() {
+            continue;
+        }
+        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        // 参照名 → そのファイルでの最新の実働日。時刻付きログは自分の日付を持つので、
+        // ファイル名の日付と一致しないことがある
+        let works = journal_work(&lines, &date);
+        let mut latest: HashMap<&str, &str> = HashMap::new();
+        for w in works.iter().filter(|w| !is_future(&w.date, today)) {
+            for r in &w.refs {
+                let entry = latest.entry(r.as_str()).or_insert(w.date.as_str());
+                if w.date.as_str() > *entry {
+                    *entry = w.date.as_str();
+                }
+            }
+        }
+        for (name, tag) in &targets {
+            if !remaining_work.contains(name.as_str()) {
                 continue;
             }
-            if content.contains(link) || tags.contains(tag.as_str()) {
-                result.insert(name.clone(), date.clone());
-                remaining.remove(name.as_str());
+            let found = [latest.get(name.as_str()), latest.get(tag.as_str())]
+                .into_iter()
+                .flatten()
+                .max();
+            if let Some(found) = found {
+                let best = work.entry(name.clone()).or_insert_with(|| found.to_string());
+                if *found > best.as_str() {
+                    *best = found.to_string();
+                }
+            }
+            // 言及と違い、実働は「見つけたら打ち切り」にできない。時刻付きログは
+            // 自分の日付を持つので、新しい journal に古い日付のログ（前日ぶんの記録など）が
+            // 書かれていると、最初に見つかった日付が最大とは限らない。ファイルの日付が
+            // 確定済みの最大実働日以下になった時点で、これ以上新しい実働日は出てこない
+            if work
+                .get(name.as_str())
+                .is_some_and(|best| date.as_str() <= best.as_str())
+            {
+                remaining_work.remove(name.as_str());
             }
         }
     }
 
-    result
+    JournalDates { mention, work }
 }
 
 /// 未反映かどうか。`repo_last > log_last` のときだけ true。
@@ -369,6 +434,10 @@ fn fetch_repo(repo: &Path) -> bool {
 struct RepoInfo {
     last: Option<String>,
     unreported_count: usize,
+    /// remote が設定されているか。git リポジトリでなければ `None`
+    has_remote: Option<bool>,
+    /// remote に無いコミット数。remote 未設定なら `None`
+    ahead_count: Option<usize>,
 }
 
 impl RepoInfo {
@@ -376,8 +445,27 @@ impl RepoInfo {
         RepoInfo {
             last: None,
             unreported_count: 0,
+            has_remote: None,
+            ahead_count: None,
         }
     }
+}
+
+/// `git log` からコミット日（`YYYY-MM-DD`）を取る。
+///
+/// 日付は `%ad`（author date）で揃える。`--after` 等で git に数えさせると
+/// committer date をローカルタイムゾーンで解釈するため基準が食い違う（`repo_info` 参照）。
+fn git_log_dates(path: &Path, revs: &[&str]) -> Vec<String> {
+    let mut args = vec!["log", "--format=%ad", "--date=short"];
+    args.extend_from_slice(revs);
+    git_output(path, &args)
+        .map(|out| {
+            out.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// コミット日（`YYYY-MM-DD`）を全件返す。
@@ -385,23 +473,31 @@ impl RepoInfo {
 /// - `git log -1`（HEAD 基準）だけでは未マージの作業ブランチを取りこぼすので `--branches --remotes` を使う
 /// - `--all` は使わない。jj (Jujutsu) の `refs/jj/keep/*` を拾って件数が数倍に膨らむ
 fn commit_dates(path: &Path) -> Vec<String> {
-    git_output(
-        path,
-        &[
-            "log",
-            "--format=%ad",
-            "--date=short",
-            "--branches",
-            "--remotes",
-        ],
-    )
-    .map(|out| {
-        out.lines()
-            .map(|l| l.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    })
-    .unwrap_or_default()
+    git_log_dates(path, &["--branches", "--remotes"])
+}
+
+/// remote に無いコミットの日付を返す（ローカルの全ブランチから辿れて remote から辿れないもの）。
+///
+/// ブランチごとの upstream 設定には依存させない。upstream 未設定の作業ブランチが
+/// 数えられなくなるうえ、`--branches --remotes` で全ブランチを見る `commit_dates` と
+/// 土俵が変わってしまうため。
+fn unpushed_dates(path: &Path) -> Vec<String> {
+    git_log_dates(path, &["--branches", "--not", "--remotes"])
+}
+
+/// `repo:` を突き合わせに使える絶対パスへ正規化する。
+///
+/// 利用側（セッションの `cwd` と PJ を前方一致で突き合わせる等）に `~` 展開を
+/// 再実装させないために出す。プロセスの `cwd` はシンボリックリンクを解決した
+/// 物理パスで報告されるので、こちらもそれに揃える。
+/// ディレクトリが存在しなければ `None`。
+fn repo_abs_path(repo: &str) -> Option<String> {
+    let path = expand_home(repo);
+    if !path.exists() {
+        return None;
+    }
+    let resolved = fs::canonicalize(&path).unwrap_or(path);
+    Some(resolved.to_string_lossy().to_string())
 }
 
 /// `repo:` のリポジトリから最終コミット日と未反映コミット数を取る。
@@ -435,13 +531,20 @@ fn repo_info(repo: &str, log_last: Option<&str>, today: &str) -> RepoInfo {
         return RepoInfo::empty();
     }
 
+    // git リポジトリでなければ `git remote` 自体が失敗するので、その区別も兼ねる
+    let has_remote = git_output(&path, &["remote"]).map(|out| !out.trim().is_empty());
+    // remote が無ければ「push 済み / 未 push」という区別自体が無い
+    let ahead_count = (has_remote == Some(true)).then(|| {
+        unpushed_dates(&path)
+            .into_iter()
+            .filter(|d| !is_future(d, today))
+            .count()
+    });
+
     let dates: Vec<String> = commit_dates(&path)
         .into_iter()
         .filter(|d| !is_future(d, today))
         .collect();
-    let Some(last) = dates.iter().max().cloned() else {
-        return RepoInfo::empty();
-    };
 
     // `is_unreported` と同じ厳密大なりで数える。log_last 当日のコミットは反映済み。
     // ログが1件も無い PJ はコミット全件が未反映（`is_unreported` も true を返す）。
@@ -451,8 +554,10 @@ fn repo_info(repo: &str, log_last: Option<&str>, today: &str) -> RepoInfo {
     };
 
     RepoInfo {
-        last: Some(last),
+        last: dates.iter().max().cloned(),
         unreported_count,
+        has_remote,
+        ahead_count,
     }
 }
 
@@ -564,7 +669,7 @@ fn collect_projects(
     }
 
     let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
-    let mentions = journal_last_mentions(base_dir, &names, today);
+    let journal = journal_dates(base_dir, &names, today);
 
     // 1つのリポジトリを複数 PJ が共有することがあるので重複を潰してから fetch する
     let fetch_failed: Vec<String> = if fetch {
@@ -611,7 +716,8 @@ fn collect_projects(
             };
 
             let updated = updated_map.get(&p.rel_path).cloned();
-            let journal_last = mentions.get(&p.name).cloned();
+            let journal_last = journal.mention.get(&p.name).cloned();
+            let journal_work_last = journal.work.get(&p.name).cloned();
 
             logs.truncate(LOG_LIMIT);
 
@@ -619,6 +725,7 @@ fn collect_projects(
                 name: p.name,
                 path: p.rel_path,
                 status: status_label(p.status).to_string(),
+                repo_abs: p.repo.as_deref().and_then(repo_abs_path),
                 repo: p.repo,
                 completed: p.completed,
                 next_action: p.note.next_action,
@@ -634,8 +741,14 @@ fn collect_projects(
                 repo_last,
                 unreported,
                 unreported_count,
+                has_remote: repo_data.as_ref().and_then(|r| r.has_remote),
+                ahead_count: repo_data.as_ref().and_then(|r| r.ahead_count),
                 journal_days: journal_last.as_deref().and_then(|d| days_between(d, today)),
                 journal_last,
+                journal_work_days: journal_work_last
+                    .as_deref()
+                    .and_then(|d| days_between(d, today)),
+                journal_work_last,
                 backlog_count: p.note.backlog.len(),
                 backlog: p.note.backlog,
                 logs,
@@ -704,6 +817,27 @@ fn health_label(health: PjHealth) -> &'static str {
     }
 }
 
+/// PJ 名の前に付ける印。桁を動かさないよう常に固定幅（[`MARKER_WIDTH`]）で返す。
+///
+/// - `!` 未反映（repo にコミットがあるのに PJ ノートのログに無い）
+/// - `L` remote 未設定。バックアップが無い状態
+/// - `^` 未 push コミットあり
+///
+/// remote が無ければ ahead は数えられないので、2文字目の `L` と `^` は排他になる。
+/// 全角文字は端末によって幅の解釈が割れるので ASCII だけを使う。
+fn markers(p: &PjProject) -> String {
+    let unreported = if p.unreported { '!' } else { ' ' };
+    let repo = match (p.has_remote, p.ahead_count) {
+        (Some(false), _) => 'L',
+        (_, Some(n)) if n > 0 => '^',
+        _ => ' ',
+    };
+    format!("{unreported}{repo}")
+}
+
+/// [`markers`] が返す印の文字数。PJ 名の列幅に足す。
+const MARKER_WIDTH: usize = 2;
+
 fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed: &[String]) {
     println!(
         "\x1b[1mPJ状態  {}  ({}件)\x1b[0m",
@@ -715,7 +849,7 @@ fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed:
     let idx_w = projects.len().to_string().len().max(1);
     let name_w = projects
         .iter()
-        .map(|p| UnicodeWidthStr::width(p.name.as_str()) + 1) // `!` の分
+        .map(|p| UnicodeWidthStr::width(p.name.as_str()) + MARKER_WIDTH)
         .chain(std::iter::once(4))
         .max()
         .unwrap_or(4);
@@ -728,11 +862,12 @@ fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed:
         .unwrap_or(9);
 
     let header = format!(
-        "  {}  {}  {}  {}  {}  {}  次の予定",
+        "  {}  {}  {}  {}  {}  {}  {}  次の予定",
         pad_display("#", idx_w),
         pad_display("PJ", name_w),
         pad_display("ログ", days_w),
         pad_display("repo", days_w),
+        pad_display("実働", days_w),
         pad_display("言及", days_w),
         pad_display("状態", health_w),
     );
@@ -742,8 +877,7 @@ fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed:
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let marker = if p.unreported { "!" } else { " " };
-            let name_cell = pad_display(&format!("{marker}{}", p.name), name_w);
+            let name_cell = pad_display(&format!("{}{}", markers(p), p.name), name_w);
             let name_colored = if p.unreported {
                 format!("\x1b[33m{name_cell}\x1b[0m")
             } else {
@@ -767,20 +901,22 @@ fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed:
                 ),
             };
             let prefix = format!(
-                "  {}  {}  {}  {}  {}  {}  ",
+                "  {}  {}  {}  {}  {}  {}  {}  ",
                 pad_display_right(&(i + 1).to_string(), idx_w),
                 name_cell,
                 pad_display(&days_cell(p.log_days), days_w),
                 pad_display(&days_cell(p.repo_days), days_w),
+                pad_display(&days_cell(p.journal_work_days), days_w),
                 pad_display(&days_cell(p.journal_days), days_w),
                 pad_display(health_label(p.health), health_w),
             );
             let prefix_colored = format!(
-                "  {}  {}  {}  {}  {}  {}  ",
+                "  {}  {}  {}  {}  {}  {}  {}  ",
                 pad_display_right(&(i + 1).to_string(), idx_w),
                 name_colored,
                 pad_display(&days_cell(p.log_days), days_w),
                 pad_display(&days_cell(p.repo_days), days_w),
+                pad_display(&days_cell(p.journal_work_days), days_w),
                 pad_display(&days_cell(p.journal_days), days_w),
                 pad_display(health_label(p.health), health_w),
             );
@@ -814,14 +950,27 @@ fn print_table(projects: &[PjProject], today: &str, fetched: bool, fetch_failed:
         .filter(|p| p.health == PjHealth::NoNext)
         .count();
     let unreported = projects.iter().filter(|p| p.unreported).count();
+    let unpushed = projects
+        .iter()
+        .filter(|p| p.ahead_count.is_some_and(|n| n > 0))
+        .count();
+    let no_remote = projects
+        .iter()
+        .filter(|p| p.has_remote == Some(false))
+        .count();
 
     println!();
-    println!("要clarify {unclarified}件 / NA不在 {no_next}件 / 未反映 {unreported}件");
     println!(
-        "\x1b[2m  ログ = PJノートの最終ログ / repo = リポジトリ最終コミット / 言及 = journal で触れられた日\x1b[0m"
+        "要clarify {unclarified}件 / NA不在 {no_next}件 / 未反映 {unreported}件 / 未push {unpushed}件 / remote無し {no_remote}件"
+    );
+    println!(
+        "\x1b[2m  ログ = PJノートの最終ログ / repo = リポジトリ最終コミット / 実働 = journal で実際に手を動かした日 / 言及 = journal で触れられた日\x1b[0m"
     );
     println!(
         "\x1b[2m  ! = 未反映（repo にコミットがあるのに PJノートのログに無い）\x1b[0m"
+    );
+    println!(
+        "\x1b[2m  ^ = 未pushコミットあり / L = remote 未設定（リモートにバックアップが無い）\x1b[0m"
     );
 
     if !fetched {
@@ -924,6 +1073,7 @@ mod tests {
             path: format!("note/{name}.md"),
             status: "active".to_string(),
             repo: None,
+            repo_abs: None,
             completed: None,
             next_action: None,
             next_action_body: None,
@@ -938,8 +1088,12 @@ mod tests {
             repo_days: None,
             unreported: false,
             unreported_count: 0,
+            has_remote: None,
+            ahead_count: None,
             journal_last: None,
             journal_days: None,
+            journal_work_last: None,
+            journal_work_days: None,
             backlog_count: 0,
             backlog: vec![],
             logs: vec![],
@@ -1165,5 +1319,65 @@ mod tests {
     fn test_days_cell() {
         assert_eq!(days_cell(Some(12)), "12d");
         assert_eq!(days_cell(None), "-");
+    }
+
+    // --- markers ---
+
+    #[test]
+    fn test_markers_none() {
+        let mut p = project("A");
+        p.has_remote = Some(true);
+        p.ahead_count = Some(0);
+        assert_eq!(markers(&p), "  ");
+    }
+
+    #[test]
+    fn test_markers_unreported() {
+        let mut p = project("A");
+        p.unreported = true;
+        assert_eq!(markers(&p), "! ");
+    }
+
+    #[test]
+    fn test_markers_no_remote() {
+        let mut p = project("A");
+        p.has_remote = Some(false);
+        assert_eq!(markers(&p), " L");
+    }
+
+    #[test]
+    fn test_markers_unpushed() {
+        let mut p = project("A");
+        p.has_remote = Some(true);
+        p.ahead_count = Some(3);
+        assert_eq!(markers(&p), " ^");
+    }
+
+    #[test]
+    fn test_markers_combined() {
+        let mut p = project("A");
+        p.unreported = true;
+        p.has_remote = Some(true);
+        p.ahead_count = Some(2);
+        assert_eq!(markers(&p), "!^");
+    }
+
+    #[test]
+    fn test_markers_without_repo_are_blank() {
+        // repo: を持たない PJ に「remote 無し」の印を付けない（バックアップすべき実体が無い）
+        let p = project("A");
+        assert_eq!(p.has_remote, None);
+        assert_eq!(markers(&p), "  ");
+    }
+
+    #[test]
+    fn test_markers_width_is_fixed() {
+        // 印の有無で桁がずれないこと
+        let plain = project("A");
+        let mut marked = project("A");
+        marked.unreported = true;
+        marked.has_remote = Some(false);
+        assert_eq!(markers(&plain).chars().count(), MARKER_WIDTH);
+        assert_eq!(markers(&marked).chars().count(), MARKER_WIDTH);
     }
 }

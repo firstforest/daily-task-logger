@@ -22,6 +22,10 @@ export interface FileInput {
 export interface TreeTaskData {
 	status: TaskStatus;
 	text: string;
+	/** 判断メタデータ（`（30分・軽・@PC）`）を取り除いた本文 */
+	body: string;
+	/** 行末の判断メタデータ。無ければ null */
+	meta: string | null;
 	fileUri: string;
 	line: number;
 	log: string;

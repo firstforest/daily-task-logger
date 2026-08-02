@@ -851,6 +851,8 @@ mod tests {
                     TreeTaskData {
                         status: TaskStatus::Incomplete,
                         text: "タスクA #work".to_string(),
+                        body: "タスクA #work".to_string(),
+                        meta: None,
                         file_uri: "/test.md".to_string(),
                         line: 1,
                         log: String::new(),
@@ -860,6 +862,8 @@ mod tests {
                     TreeTaskData {
                         status: TaskStatus::Incomplete,
                         text: "タスクB #personal".to_string(),
+                        body: "タスクB #personal".to_string(),
+                        meta: None,
                         file_uri: "/test.md".to_string(),
                         line: 2,
                         log: String::new(),
@@ -892,6 +896,8 @@ mod tests {
                 tasks: vec![TreeTaskData {
                     status: TaskStatus::Incomplete,
                     text: "タスクA #work".to_string(),
+                    body: "タスクA #work".to_string(),
+                    meta: None,
                     file_uri: "/test.md".to_string(),
                     line: 1,
                     log: String::new(),
@@ -922,6 +928,8 @@ mod tests {
                 tasks: vec![TreeTaskData {
                     status: TaskStatus::Incomplete,
                     text: "本文にタグなしタスク".to_string(),
+                    body: "本文にタグなしタスク".to_string(),
+                    meta: None,
                     file_uri: "/projectA.md".to_string(),
                     line: 3,
                     log: String::new(),

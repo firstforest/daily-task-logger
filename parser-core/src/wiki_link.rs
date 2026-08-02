@@ -1,6 +1,7 @@
 use regex::Regex;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -68,9 +69,16 @@ pub fn wiki_link_initial_content(name: &str) -> String {
     format!("# {name}\n")
 }
 
+/// 行単位で何度も呼ばれるのでコンパイル結果を使い回す（`journal_work` は
+/// journal のタスク行ごとにこれを引く）。
+fn link_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[\[([^\[\]|]+?)\]\]").unwrap())
+}
+
 pub fn parse_wiki_links(text: &str) -> Vec<WikiLinkMatch> {
-    let re = Regex::new(r"\[\[([^\[\]|]+?)\]\]").unwrap();
-    re.captures_iter(text)
+    link_re()
+        .captures_iter(text)
         .filter_map(|caps| {
             let whole = caps.get(0)?;
             let name = caps.get(1)?.as_str().to_string();

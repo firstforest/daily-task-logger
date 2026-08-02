@@ -93,6 +93,17 @@ fn write_note(home: &Path, name: &str, body: &str) {
     fs::write(note_dir.join(format!("{name}.md")), body).unwrap();
 }
 
+/// `$HOME/taski/journal/<年>/<月>/<日付>.md` に journal を書く。
+fn write_journal(home: &Path, date: &str, body: &str) {
+    let dir = home
+        .join("taski")
+        .join("journal")
+        .join(&date[0..4])
+        .join(&date[5..7]);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{date}.md")), body).unwrap();
+}
+
 /// `taski pj --format json` を実行して JSON を返す。
 fn run_pj(home: &Path, args: &[&str]) -> serde_json::Value {
     run_pj_tz(home, None, args)
@@ -464,7 +475,11 @@ fn test_table_output_marks_unreported() {
         .expect("taski を実行できません");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("!未反映PJ"), "未反映マーカーが無い:\n{stdout}");
+    // 印は「未反映」「repo の状態」の2文字。remote を持たないリポジトリなので `L` が付く
+    assert!(
+        stdout.contains("!L未反映PJ"),
+        "未反映マーカーが無い:\n{stdout}"
+    );
     assert!(stdout.contains("未反映 1件"), "集計が合わない:\n{stdout}");
 }
 
@@ -748,6 +763,376 @@ fn test_past_today_table_has_no_negative_days() {
     assert!(
         stdout.contains("未反映 0件"),
         "未反映が数えられている:\n{stdout}"
+    );
+}
+
+/// journal の「言及」と「実働」を分けて出すこと。
+///
+/// 言及だけを見ると `## 今日の候補` に載っただけの PJ が「動いている」ように見え、
+/// 未反映検出（`log_last < journal_last`）が構造的に誤検出する。
+#[test]
+fn test_journal_work_is_separate_from_mention() {
+    let home = TempHome::new("journal-work");
+    let root = home.path();
+
+    for name in ["完了PJ", "時刻ログPJ", "言及だけPJ"] {
+        write_note(
+            root,
+            name,
+            &format!("---\nproject: active\n---\n# {name}\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n"),
+        );
+    }
+
+    write_journal(
+        root,
+        "2026-07-20",
+        "# 2026-07-20\n\n- [x] [[完了PJ]] のカードを作った\n",
+    );
+    write_journal(
+        root,
+        "2026-07-22",
+        "# 2026-07-22\n\n- [ ] [[時刻ログPJ]] を進める\n    - 2026-07-22 10:00-11:30: 下書きまで\n",
+    );
+    // 3件とも候補には載っている（＝言及はある）が、ここで動いたのは1件も無い
+    write_journal(
+        root,
+        "2026-07-28",
+        "# 2026-07-28\n\n## 今日の候補\n\n- [ ] [[完了PJ]] の続き\n- [ ] [[時刻ログPJ]] の続き\n- [ ] [[言及だけPJ]] を始める\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+
+    let done = find(&json, "完了PJ");
+    assert_eq!(done["journal_last"], "2026-07-28", "言及は候補に載った日");
+    assert_eq!(done["journal_work_last"], "2026-07-20", "実働は完了した日");
+    assert_eq!(done["journal_work_days"], 12);
+
+    let logged = find(&json, "時刻ログPJ");
+    assert_eq!(logged["journal_last"], "2026-07-28");
+    assert_eq!(
+        logged["journal_work_last"], "2026-07-22",
+        "時刻付きログがあれば未完了でも実働"
+    );
+
+    // 候補に載っただけの PJ は実働なし。ここが null にならないと毎朝の誤検出が残る
+    let mentioned = find(&json, "言及だけPJ");
+    assert_eq!(mentioned["journal_last"], "2026-07-28");
+    assert_eq!(
+        mentioned["journal_work_last"],
+        serde_json::Value::Null,
+        "候補に載っただけを実働と数えてはいけない"
+    );
+    assert_eq!(mentioned["journal_work_days"], serde_json::Value::Null);
+}
+
+/// 実働日は「新しい journal で最初に見つかった日」ではなく最大値を採ること。
+///
+/// 時刻付きログは自分の日付を持つので、新しい journal に前日ぶんの作業を
+/// 書き足すと、降順走査で最初に当たる日付が最大とは限らない。
+#[test]
+fn test_journal_work_takes_max_not_first_hit() {
+    let home = TempHome::new("journal-work-max");
+    let root = home.path();
+
+    write_note(
+        root,
+        "遡及PJ",
+        "---\nproject: active\n---\n# 遡及PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    // 新しい journal には「前に少しやった分」の記録だけ（日付は 07-25）
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n- [ ] [[遡及PJ]] の続き\n    - 2026-07-25 10:00: 前に少しやった分を記録\n",
+    );
+    // 実際に最後に手が動いたのは 07-28
+    write_journal(
+        root,
+        "2026-07-28",
+        "# 2026-07-28\n\n- [x] [[遡及PJ]] のカードを作った\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "遡及PJ");
+    assert_eq!(p["journal_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_work_last"], "2026-07-28",
+        "古い journal にある新しい実働日を取り逃してはいけない"
+    );
+    assert_eq!(p["journal_work_days"], 4);
+}
+
+/// 言及と実働で参照の拾い方が揃っていること。
+///
+/// 実働は言及の部分集合なので、「実働はあるのに言及が null」は成り立たない。
+#[test]
+fn test_journal_mention_matches_work_link_normalization() {
+    let home = TempHome::new("journal-link-norm");
+    let root = home.path();
+
+    write_note(
+        root,
+        "正規化PJ",
+        "---\nproject: active\n---\n# 正規化PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    // `.md` 付きのリンク。実働側は正規化して拾うので言及側も拾えなければならない
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n- [x] [[正規化PJ.md]] のカードを作った\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "正規化PJ");
+    assert_eq!(p["journal_work_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_last"], "2026-07-30",
+        "実働があるのに言及が null になってはいけない"
+    );
+}
+
+/// 候補に並べた PJ が、別セクションの無関係な時刻メモで実働扱いにならないこと。
+#[test]
+fn test_candidate_list_is_not_work_despite_timed_note() {
+    let home = TempHome::new("journal-candidate");
+    let root = home.path();
+
+    write_note(
+        root,
+        "候補だけPJ",
+        "---\nproject: active\n---\n# 候補だけPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    // 「今日の候補」＋別セクションの時刻メモ、という journal の普通の形
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n\
+         ## 今日の候補\n\n\
+         - [ ] [[候補だけPJ]] を始める\n\n\
+         ## 記録\n\n\
+         - 定例ミーティング\n\
+         \x20   - 2026-07-30 10:00-11:00: 進捗共有\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "候補だけPJ");
+    assert_eq!(p["journal_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_work_last"],
+        serde_json::Value::Null,
+        "別セクションの時刻メモを実働と取り違えてはいけない"
+    );
+}
+
+/// `repo:` の展開済み絶対パスを出すこと（利用側に `~` 展開を再実装させない）。
+#[test]
+fn test_repo_abs_is_expanded() {
+    let home = TempHome::new("repo-abs");
+    let root = home.path();
+    let repo = make_repo(root, "repo-abs-target", &["2026-07-26"]);
+
+    // front matter には `~/` 形式の生値を書く
+    write_note(
+        root,
+        "展開PJ",
+        "---\nproject: active\nrepo: ~/repo-abs-target\n---\n# 展開PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    write_note(
+        root,
+        "リポジトリ無しPJ",
+        "---\nproject: active\nrepo: ~/does-not-exist-98765\n---\n# リポジトリ無しPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    write_note(
+        root,
+        "repo未指定PJ",
+        "---\nproject: active\n---\n# repo未指定PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-01"],
+    );
+
+    let expanded = find(&json, "展開PJ");
+    // 生値はそのまま残し、展開済みパスを別フィールドで足す
+    assert_eq!(expanded["repo"], "~/repo-abs-target");
+    let expected = fs::canonicalize(&repo).unwrap().to_string_lossy().to_string();
+    assert_eq!(expanded["repo_abs"], expected);
+
+    // 存在しないディレクトリは null（前方一致で誤爆させない）
+    let missing = find(&json, "リポジトリ無しPJ");
+    assert_eq!(missing["repo"], "~/does-not-exist-98765");
+    assert_eq!(missing["repo_abs"], serde_json::Value::Null);
+
+    assert_eq!(find(&json, "repo未指定PJ")["repo_abs"], serde_json::Value::Null);
+}
+
+/// remote 未設定・未 push コミットを検出すること。
+#[test]
+fn test_has_remote_and_ahead_count() {
+    let home = TempHome::new("ahead");
+    let root = home.path();
+
+    // remote を持たないローカル専用リポジトリ
+    make_repo(root, "repo-local", &["2026-07-20"]);
+
+    // 全部 push 済みの clone と、ローカルにだけコミットがある clone
+    let origin = make_repo(root, "repo-origin", &["2026-07-20"]);
+    let synced = root.join("repo-synced");
+    let ahead = root.join("repo-ahead");
+    for clone in [&synced, &ahead] {
+        git(
+            root,
+            &["clone", &origin.to_string_lossy(), &clone.to_string_lossy()],
+            None,
+        );
+    }
+    commit_file(
+        &ahead,
+        1,
+        Some("2026-07-25T12:00:00+09:00"),
+        Some("2026-07-25T12:00:00+09:00"),
+    );
+    commit_file(
+        &ahead,
+        2,
+        Some("2026-07-26T12:00:00+09:00"),
+        Some("2026-07-26T12:00:00+09:00"),
+    );
+
+    for (name, repo) in [
+        ("ローカル専用PJ", Some("~/repo-local")),
+        ("同期済みPJ", Some("~/repo-synced")),
+        ("未pushPJ", Some("~/repo-ahead")),
+        ("repo無しPJ", None),
+    ] {
+        let front = match repo {
+            Some(repo) => format!("---\nproject: active\nrepo: {repo}\n---\n"),
+            None => "---\nproject: active\n---\n".to_string(),
+        };
+        write_note(
+            root,
+            name,
+            &format!("{front}# {name}\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n"),
+        );
+    }
+
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-01"],
+    );
+
+    // remote が無い = GitHub にバックアップが無い。ahead は「push 済みかどうか」の
+    // 区別自体が無いので null
+    let local = find(&json, "ローカル専用PJ");
+    assert_eq!(local["has_remote"], false);
+    assert_eq!(local["ahead_count"], serde_json::Value::Null);
+
+    let synced = find(&json, "同期済みPJ");
+    assert_eq!(synced["has_remote"], true);
+    assert_eq!(synced["ahead_count"], 0);
+
+    let ahead = find(&json, "未pushPJ");
+    assert_eq!(ahead["has_remote"], true);
+    assert_eq!(ahead["ahead_count"], 2);
+
+    // repo: を持たない PJ に「remote 無し」と言わない（バックアップすべき実体が無い）
+    let none = find(&json, "repo無しPJ");
+    assert_eq!(none["has_remote"], serde_json::Value::Null);
+    assert_eq!(none["ahead_count"], serde_json::Value::Null);
+}
+
+/// 基準日より後の未 push コミットは数えないこと（`--today` で過去を振り返る場合）。
+#[test]
+fn test_ahead_count_respects_today() {
+    let home = TempHome::new("ahead-today");
+    let root = home.path();
+
+    let origin = make_repo(root, "repo-origin-past", &["2026-07-20"]);
+    let clone = root.join("repo-clone-past");
+    git(
+        root,
+        &["clone", &origin.to_string_lossy(), &clone.to_string_lossy()],
+        None,
+    );
+    commit_file(
+        &clone,
+        1,
+        Some("2026-07-31T12:00:00+09:00"),
+        Some("2026-07-31T12:00:00+09:00"),
+    );
+
+    write_note(
+        root,
+        "過去基準PJ",
+        "---\nproject: active\nrepo: ~/repo-clone-past\n---\n# 過去基準PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    // 07-25 時点では 07-31 のコミットはまだ無い
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-07-25"],
+    );
+    assert_eq!(find(&json, "過去基準PJ")["ahead_count"], 0);
+
+    let json = run_pj(
+        root,
+        &["--format", "json", "--no-fetch", "--today", "2026-08-01"],
+    );
+    assert_eq!(find(&json, "過去基準PJ")["ahead_count"], 1);
+}
+
+/// table に remote 未設定・未 push の印が出ること。
+#[test]
+fn test_table_marks_repo_state() {
+    let home = TempHome::new("table-repo-state");
+    let root = home.path();
+
+    make_repo(root, "repo-local-mark", &["2026-07-20"]);
+    let origin = make_repo(root, "repo-origin-mark", &["2026-07-20"]);
+    let ahead = root.join("repo-ahead-mark");
+    git(
+        root,
+        &["clone", &origin.to_string_lossy(), &ahead.to_string_lossy()],
+        None,
+    );
+    commit_file(
+        &ahead,
+        1,
+        Some("2026-07-25T12:00:00+09:00"),
+        Some("2026-07-25T12:00:00+09:00"),
+    );
+
+    for (name, repo) in [
+        ("ローカルのみPJ", "~/repo-local-mark"),
+        ("未push印PJ", "~/repo-ahead-mark"),
+    ] {
+        write_note(
+            root,
+            name,
+            &format!(
+                "---\nproject: active\nrepo: {repo}\n---\n# {name}\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n\n## ログ\n\n- 2026-07-30: ここまで\n"
+            ),
+        );
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_taski"))
+        .env("HOME", root)
+        .args(["pj", "--no-fetch", "--today", "2026-08-01"])
+        .output()
+        .expect("taski を実行できません");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains(" Lローカルのみ"),
+        "remote 未設定の印が無い:\n{stdout}"
+    );
+    assert!(stdout.contains(" ^未push印PJ"), "未pushの印が無い:\n{stdout}");
+    assert!(
+        stdout.contains("未push 1件") && stdout.contains("remote無し 1件"),
+        "集計が合わない:\n{stdout}"
     );
 }
 
