@@ -78,7 +78,7 @@ attach(log) : Option<Task>        -- インデント厳密大なりで直前の�
 
 | 帰属を持たない Log | 日付の出どころ | 何に使われるか |
 | --- | --- | --- |
-| PJ ノートの `## ログ` | 行に書かれた日付 | Project の履歴（`log_last`） |
+| PJ ノートに書かれた記録 | 行に書かれた日付 | Project の履歴（`log_last`） |
 | ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`） | `# YYYY-MM-DD` 見出しから継承 | スケジュール |
 | どのタスクよりも浅い位置に書かれた日付行 | 行に書かれた日付 | 何にも使われない |
 
@@ -114,7 +114,7 @@ Project は Document を所有する別の実体ではなく、**Document の部
 
 | 種別 | 作り直す元 | 変わる条件 | 例 |
 | --- | --- | --- | --- |
-| **射影** | ノート本文 | ノートを書き換えたとき | `next_action` `backlog` `logs` `log_last` `health` |
+| **射影** | ノート本文 | ノートを書き換えたとき | `tasks` `logs` `log_last` `health` |
 | **観測の構成** | （宣言そのもの。どこを見に行くか） | ノートを書き換えたとき | `repo` |
 | **観測** | 世界 | 世界が変わったとき | `updated` `repo_last` `journal_last` `ahead_count` |
 
@@ -130,17 +130,35 @@ Project は Document を所有する別の実体ではなく、**Document の部
 
 この区別が `has_remote`（§6.6）の設計の根拠になっている。`repo:` を持たない Project の `has_remote` が `false` ではなく `null` なのは、「remote が無い」という観測結果ではなく「観測していない」からである。
 
-#### 射影は Project の外にある実体を指す
+#### セクションはドメインに属さない
 
-`next_action` は Task であり、`logs` は Log の列である（どちらも §2.1 の実体）。Project がこれらを**所有しているわけではない**。ノートという Document の中にある実体を、セクションで絞り込んで指しているだけである。
+射影はノート**全体**から実体を拾う。見出しで絞り込まない。
 
 ```
-next_action(pj) = 「## 次の予定」にある最初の未完了 Task
-logs(pj)        = 「## ログ」にある Log の列（どの Task にも帰属しない — §2.1）
-backlog(pj)     = 「## オープンタスク」にある箇条書き
+tasks(pj)  = Tasks(pj.note)                              -- ノート内の Task 全部
+logs(pj)   = { l ∈ Logs(pj.note) | attach(l) = None }    -- 帰属しない Log 全部（§2.1）
 ```
 
-`backlog` だけが実体を指さない。チェックボックスを持たないので Task ではなく、日付を持たないので Log でもない。**まだ実体になっていない意図**であり、テキストのままにしてあるのは意図的である（Task にすると日付ビューに流れ込む）。
+Project がこれらを**所有しているわけではない**。ノートという Document の中にある実体を指しているだけである。
+
+**`## 次の予定` / `## オープンタスク` のようなセクションはドメインの構造ではない。** 人が文書を整理するための道具であり、モデルがその見出し文字列に依存してはならない。実体の判定は構文で決まる — `- [ ]` があれば Task、日付があれば Log。それ以外の行は自由記述であって、ドメインには現れない。
+
+この帰結として、次の 2 つは概念から消える。
+
+| 消えるもの | 理由 |
+| --- | --- |
+| `next_action` | 「これが次だ」という選択は人が `tasks(pj)` の中から行う。taski は候補を出すところまでを担い、選ばない（P3） |
+| `backlog` | Task でも Log でもない箇条書きは、モデル上どの実体でもない。「まだ実体になっていない意図」ではなく、単に自由記述である |
+
+`health` は残るが、基盤が `next_action` から `tasks(pj)` に移る。
+
+```
+health(pj) = NoNext      ⟺ #{ t ∈ tasks(pj) | t.status = Todo } = 0
+           | Unclarified ⟺ 未完了 Task はあるが、判断メタデータを持つものが 1 つも無い
+           | Ok          ⟺ 判断メタデータを持つ未完了 Task がある
+```
+
+判断メタデータ（`（45分・重・@PC）`）は `split_decision_meta` で既に Task レベルの概念であり、`taski list` の `body` / `meta` と同じ関数を共有する（P4）。「次に何をするか決まっているか」という `health` の意味は変わらない。
 
 #### 同一性はパスに依存する
 
@@ -158,11 +176,13 @@ Observation(pj) = ジャーナル由来（§2.5）∪ git 由来 ∪ ファイ�
 
 | 層 | 概念 | 例 |
 | --- | --- | --- |
-| a | Project 本体（`id` / `status`）と射影 | `status` `next_action` `logs` `backlog` |
+| a | Project 本体（`id` / `status`）と射影 | `status` `tasks` `logs` `health` |
 | b | Observation / fs | `repo_abs` |
 | c | Observation / git | `updated` `repo_last` `ahead_count` |
 | d | Observation / ジャーナル | `journal_last` `journal_work_last` |
 | e | 導出（`today` との差） | `stale_days` `log_days` `unreported` |
+
+現状の a 層にはこれに加えて `next_action` / `backlog` が含まれる。目標では消える（§11 G-10）。
 
 **定義と観測の分離は P3（事実と判断を分ける）の 1 つ下の層にある規律である。** 定義はノートを書き換えれば変わる。観測は世界を見に行かないと変わらない。両者を 1 つの構造体に平坦化するのは出力の都合であって、概念としては別に扱う。
 
@@ -196,15 +216,9 @@ tags(task) = { r ∈ task.refs | r は Tag } ∪ { name(task.at.0) }
 
 **層をまたいだ依存を持ち込まない。** 現状の `extract_file_tags` は層 1 のタグ導出でありながら `project: active` を条件にしており、層 4 の情報を見ている。「どの PJ か」（事実）に「表示するか」（判断）が混入した形である。タグ導出は層 1・2 で完結させ、`status` による絞り込みは表示側の責務とする（§11 G-1）。
 
-`## 次の予定` の特別扱いも関係ではない。**Project ノート内での役割**であり、層とは直交する軸である。
+なお本ドキュメントで**「帰属」と呼ぶのは Log と Task の関係（§2.1・§5）だけ**である。Task と Project の間にあるのは上の 4 層とその合成であって、帰属ではない。
 
-```
-next_action(pj) = 「## 次の予定」セクションにある最初の未完了 Task
-```
-
-つまり `next_action` は Task であって文字列ではない。位置を持つので、そこへ飛べる（現状は持っていない — §11 G-3）。
-
-なお本ドキュメントで**「帰属」と呼ぶのは Log と Task の関係（§5）だけ**である。Task と Project の間にあるのは上の 4 層とその合成であって、帰属ではない。
+Project ノートの中でどのセクションに書かれているかも、この層のどこにも現れない。セクションはドメインの構造ではないからである（§2.2）。
 
 ### 2.4 同一性 — PjId と参照の解決
 
@@ -284,9 +298,7 @@ erDiagram
     }
     PROJECT {
         PjId id PK "ノートのファイル名"
-        Status status "active / someday / done"
-        Task next_action "## 次の予定 の先頭"
-        Backlog backlog "## オープンタスク"
+        Status status "active / someday / done（完了日を含む）"
     }
     LOG {
         Date date "行に書かれた日付、または文脈から継承"
@@ -304,7 +316,8 @@ erDiagram
 
 - **`TASK` から `PROJECT` への辺は無い。** 層 2 → 3 → 4 を辿って初めて届く（§2.3）。タグ別ビューは層 2 で止まるので、この図の右半分を必要としない。
 - **`LOG` の親は 2 つある。** 収容（必ず 1 つの `DOCUMENT` にある）と帰属（`TASK` に付くとは限らない）で、後者が `0..1` であることが重要である（§2.1）。PJ ノートの `## ログ` は帰属を持たない `LOG` で、`PROJECT` が所有しているのではなくセクションで絞り込んで指しているだけである（§2.2）。
-- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2.2）。`DOCUMENT` から出る辺が 2 本（層 1 と層 4）あるのはそのためで、層 3 の解決先として戻ってくる辺も同じ `DOCUMENT` である。
+- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2.2）。`DOCUMENT` から出る辺が 3 本（層 1・層 4・`LOG` の収容）あるのはそのためで、層 3 の解決先として戻ってくる辺も同じ `DOCUMENT` である。
+- **`PROJECT` が 2 属性しか持たないことが重要である**（§2.2）。`next_action` や `backlog` が無いのは省略ではなく、セクション名に依存する射影をドメインから外した結果である。`tasks(pj)` / `logs(pj)` は図の上では `DOCUMENT → TASK` / `DOCUMENT → LOG` の辺をそのまま辿るだけで、`PROJECT` から生える辺は無い。
 - `OBSERVATION` も保存される実体ではなく、実行のたびに世界を見て作られる値である。`PROJECT` とは「概念としては別だが、出力では 1 つの構造体に平坦化される」関係にある。
 
 ## 3. ドメインの語彙
@@ -1002,7 +1015,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | `Document` | `FileInput`（`file_uri` + `lines`）、または `&[String]` と別引数 | G-8 |
 | `Project` 本体（`id` + `status`） | ファイル名 + `FrontMatterParsed.project`。`completed` が独立している | G-9 |
-| Project の射影 | `pj::PjNote`（`next_action` / `logs` / `backlog` / `health`） | G-3 |
+| Project の射影（`tasks` / `logs` / `health`） | `pj::PjNote`。セクション名で絞り込んでおり、`next_action` / `backlog` という概念に無いものを作っている | G-3・G-10 |
 | 観測の構成（`repo`） | `FrontMatterParsed.repo`。定義と同じ層に置かれている | — |
 | `Observation` | `cli::pj::PjProject` の b〜e 層（§6.6） | — |
 | `Task` | `ParsedTask` / `ParsedTaskWithDate` / `ScheduleEntry` / `next_action: String` | G-3・G-7 |
@@ -1031,11 +1044,11 @@ stateDiagram-v2
 - 目標: §2.4 の `match_key` を 1 箇所に置き、PJ ノートの `match_key` の一意性を不変条件にする。
 - 影響: `在庫 管理.md` と `在庫_管理.md` が同居すると、現在は黙って両方に同じ言及が付く。一意性を課すとエラーとして表面化する。
 
-**G-3 `next_action` が位置を持たない。**
+**G-3 PJ ノートのタスクが Task 型になっていない。**
 
-- 現状: `PjNote.next_action: Option<String>`。行番号もファイルも持たないので、`taski pj` の出力から次の予定の行へ飛べない。同じチェックボックス行なのに `ParsedTask` にはならず、文字列として扱われている。
-- 目標: §2.3 のとおり Task として扱う（`at: (Document, Line)` を持つ）。
-- 影響: `PjProject` の JSON に位置のフィールドが増える（既存フィールドは保つので後方互換）。VS Code 側から PJ の次の予定へ遷移できるようになる。
+- 現状: `PjNote.next_action: Option<String>`。`## 次の予定` の 1 行を文字列として持つだけで、行番号もファイルも持たない。同じチェックボックス行なのに `ParsedTask` にはならず、`taski pj` の出力から元の行へ飛べない。ノート内の他のチェックボックス行はそもそも読まれない。
+- 目標: §2.2 の `tasks(pj)`。ノート内のチェックボックス行をすべて Task として扱い、位置（`at`）を持たせる。
+- 影響: `PjProject` の出力が「次の予定 1 行の文字列」から「未完了 Task の列（位置つき）」に変わる。VS Code 側から PJ のタスクへ遷移できるようになる。G-10 の一部として同時に行うことになる。
 
 **G-4 観測が Task を経由していない。**
 
@@ -1095,6 +1108,22 @@ stateDiagram-v2
 - 現状: `FrontMatterParsed { project: Option<ProjectStatus>, completed: Option<String> }` で 2 つが独立したフィールドになっている。`project: active` かつ `completed: 2026-01-01` が表現でき、`PjProject` にもそのまま出る。§7 I-16 が「front matter の `completed:` が `today` より後になることは構文上ありうる」と断っているのも、この独立性の帰結である。
 - 目標: §2.2 のとおり `Status = Active | Someday | Done(Option<Date>)` に畳み、`completed` を `Done` の中にだけ置く。
 - 影響: 小さい。front matter の 2 キー表記（`project:` / `completed:`）は変えず、`PjProject` の JSON も `status: String`（§10 W-6）と `completed: Option<String>` のまま出せる。畳むのは `parse_front_matter` の戻り値から `collect_projects` までの区間に閉じるので、利用側の契約は変わらない。
+
+**G-10 セクション名がドメインモデルに漏れている。**
+
+- 現状: `parse_pj_note` は `split_sections` で `## 次の予定` / `## ログ` / `## オープンタスク` という 3 つの日本語見出しを探し、そこから `next_action` / `logs` / `backlog` を作る。`health` は `next_action` から導出される（§7 I-11）。requirements.md 2.3 の「チェックボックスを持つのは `## 次の予定` だけ」という規約は、この構造を成り立たせるための書式の制約である。
+- 目標: §2.2 のとおりセクションをドメインから外す。射影はノート全体から実体を拾い、`next_action` と `backlog` は概念から消す。`health` は `tasks(pj)` から再定義する。
+- 影響: **本ドキュメントの移行課題の中で最も大きい。**
+
+  | 影響 | 内容 |
+  | --- | --- |
+  | 書式の規約 | 「チェックボックスは `## 次の予定` だけ」が不要になる。PJ ノートが複数の Task を持てるようになり、それらは `taski list` の「日付なし」グループに出る。絞り込みはビュー側の責務とする（G-1 と同じ結論） |
+  | 出力契約 | `taski pj` から `next_action` / `next_action_body` / `next_action_meta` / `next_action_ai` / `backlog` / `backlog_count` が消え、未完了 Task の列（位置つき）が入る。`cli/AGENTS.md` と利用側 skill の同時修正が要る |
+  | 実装 | `split_sections` / `extract_next_action` / `extract_backlog` が不要になる。`extract_logs` は「帰属しない Log」の抽出に変わる |
+  | 不変条件 | §7 の I-11 は `tasks(pj)` ベースに書き換え、I-12 / I-13 / I-15 は対象が消えるので削除になる |
+  | 誤検出 | 説明文中に日付行（`2026-08-01: 締切` など）を書くとログとして拾われる。セクションによる隔離が無くなるため、`## ログ` の外に書いた記録も拾えるようになるのと表裏である |
+
+  P3 の例外（`PjHealth`）は残る。基盤が `next_action` から `tasks(pj)` に移るだけで、「他フィールドから決定的に導出される要約」という性格は変わらない。
 
 ## 12. 拡張の指針
 
