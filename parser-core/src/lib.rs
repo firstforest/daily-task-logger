@@ -1,4 +1,5 @@
 pub mod pj;
+pub mod scan;
 pub mod wiki_link;
 
 use std::collections::HashMap;
@@ -30,16 +31,6 @@ impl TaskStatus {
             _ => TaskStatus::Incomplete,
         }
     }
-}
-
-// === Internal types ===
-
-struct CurrentTask {
-    indent: usize,
-    status: TaskStatus,
-    text: String,
-    line: usize,
-    context: Vec<String>,
 }
 
 // === Output types ===
@@ -189,140 +180,61 @@ pub struct ScheduleEntry {
 // === Parsing logic ===
 
 pub fn parse_tasks_internal(lines: &[String], target_date: &str) -> Vec<ParsedTask> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
     let mut tasks: Vec<ParsedTask> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: vec![],
-            });
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let log_content = &caps[3];
-
-                if date_str == target_date && date_indent > ct.indent {
-                    tasks.push(ParsedTask {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: log_content.to_string(),
-                    });
-                }
+    scan::scan(lines, |ev| {
+        if let scan::Event::Log {
+            task: Some(t),
+            date,
+            text,
+            ..
+        } = ev
+        {
+            if date == target_date {
+                tasks.push(ParsedTask {
+                    status: t.status,
+                    text: t.text.clone(),
+                    line: t.line,
+                    log: text.to_string(),
+                });
             }
         }
-    }
+    });
 
     tasks
 }
 
 pub fn parse_all_dates_internal(lines: &[String]) -> Vec<ParsedTaskWithDate> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
-    let heading_re = Regex::new(r"^(#{1,6})[ \t]+(.*)").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
     let mut tasks: Vec<ParsedTaskWithDate> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut current_task_has_log = false;
-    let mut current_headings: Vec<String> = Vec::new();
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = heading_re.captures(text) {
-            let level = caps[1].len();
-            current_headings.truncate(level - 1);
-            current_headings.push(caps[2].to_string());
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                if !current_task_has_log {
-                    tasks.push(ParsedTaskWithDate {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: String::new(),
-                        date: String::new(),
-                        context: ct.context.clone(),
-                    });
-                }
-            }
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: current_headings.clone(),
-            });
-            current_task_has_log = false;
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let log_content = &caps[3];
-
-                if date_indent > ct.indent {
-                    tasks.push(ParsedTaskWithDate {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: log_content.to_string(),
-                        date: date_str.to_string(),
-                        context: ct.context.clone(),
-                    });
-                    current_task_has_log = true;
-                }
-            }
-        }
-    }
-
-    if let Some(ref ct) = current_task {
-        if !current_task_has_log {
-            tasks.push(ParsedTaskWithDate {
-                status: ct.status,
-                text: ct.text.clone(),
-                line: ct.line,
-                log: String::new(),
-                date: String::new(),
-                context: ct.context.clone(),
-            });
-        }
-    }
+    scan::scan(lines, |ev| match ev {
+        scan::Event::Log {
+            task: Some(t),
+            date,
+            text,
+            ..
+        } => tasks.push(ParsedTaskWithDate {
+            status: t.status,
+            text: t.text.clone(),
+            line: t.line,
+            log: text.to_string(),
+            date: date.to_string(),
+            context: t.context.clone(),
+        }),
+        // ログを 1 件も持たないタスクだけが「日付なし」の値を 1 個生む（design.md I-2）
+        scan::Event::TaskClosed {
+            task,
+            had_log: false,
+        } => tasks.push(ParsedTaskWithDate {
+            status: task.status,
+            text: task.text.clone(),
+            line: task.line,
+            log: String::new(),
+            date: String::new(),
+            context: task.context.clone(),
+        }),
+        _ => {}
+    });
 
     tasks
 }
@@ -505,102 +417,45 @@ fn pad_time(time: &str) -> String {
 }
 
 pub fn parse_schedule_internal(lines: &[String], target_date: &str) -> Vec<ScheduleEntry> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re =
-        Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+(\d{1,2}:\d{2})(?:-(\d{1,2}:\d{2}))?)?:[ \t]*(.*)").unwrap();
-    let time_memo_re = Regex::new(r"^-[ \t](\d{1,2}:\d{2}):[ \t](.+)").unwrap();
-    let heading_date_re = Regex::new(r"^#[ \t]+(\d{4}-\d{2}-\d{2})").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
-    // ジャーナルファイルの日付見出しが target_date と一致するか判定。
-    // フェンス内は全解析から除外するので、ここでも走査しながら内外を追う
-    // （記法の例として ``` の中に書いた `# YYYY-MM-DD` で時刻メモを発火させない）
-    let is_target_date_file = {
-        let mut in_code_block = false;
-        lines.iter().any(|line| {
-            if fence_re.is_match(line) {
-                in_code_block = !in_code_block;
-                return false;
-            }
-            if in_code_block {
-                return false;
-            }
-            heading_date_re
-                .captures(line)
-                .is_some_and(|caps| &caps[1] == target_date)
-        })
-    };
+    // トップレベル時刻メモは、対象日と一致する日付見出しがこの文書にあるときだけ発火する
+    // （syntax.md §3.4）。見出しより後ろにあることは要求されないので、走査より前に決める
+    let is_target_date_file = scan::has_date_heading(lines, target_date);
 
     let mut entries: Vec<ScheduleEntry> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
+    scan::scan(lines, |ev| match ev {
+        scan::Event::Log {
+            task: Some(t),
+            line,
+            date,
+            time,
+            end_time,
+            text,
+            ..
+        } if date == target_date => entries.push(ScheduleEntry {
+            task_text: t.text.clone(),
+            task_line: t.line,
+            status: t.status,
+            log_text: text.to_string(),
+            log_line: line,
+            time: pad_time(time.unwrap_or("")),
+            end_time: pad_time(end_time.unwrap_or("")),
+            file_uri: String::new(),
+        }),
+        scan::Event::TimeMemo { line, time, text } if is_target_date_file => {
+            entries.push(ScheduleEntry {
+                task_text: String::new(),
+                task_line: line,
+                status: TaskStatus::Incomplete,
+                log_text: text.to_string(),
+                log_line: line,
+                time: pad_time(time),
+                end_time: String::new(),
+                file_uri: String::new(),
+            })
         }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: vec![],
-            });
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let time_str = caps.get(3).map_or("", |m| m.as_str());
-                let end_time_str = caps.get(4).map_or("", |m| m.as_str());
-                let log_content = &caps[5];
-
-                if date_str == target_date && date_indent > ct.indent {
-                    // 時刻を2桁にパディング
-                    let time_padded = pad_time(time_str);
-                    let end_time_padded = pad_time(end_time_str);
-                    entries.push(ScheduleEntry {
-                        task_text: ct.text.clone(),
-                        task_line: ct.line,
-                        status: ct.status,
-                        log_text: log_content.to_string(),
-                        log_line: i,
-                        time: time_padded,
-                        end_time: end_time_padded,
-                        file_uri: String::new(),
-                    });
-                }
-            }
-            continue;
-        }
-
-        // 時刻メモ: ジャーナルファイル内のトップレベル「- HH:MM: テキスト」行
-        if is_target_date_file {
-            if let Some(caps) = time_memo_re.captures(text) {
-                let time_str = &caps[1];
-                let memo_text = &caps[2];
-                let time_padded = pad_time(time_str);
-                entries.push(ScheduleEntry {
-                    task_text: String::new(),
-                    task_line: i,
-                    status: TaskStatus::Incomplete,
-                    log_text: memo_text.to_string(),
-                    log_line: i,
-                    time: time_padded,
-                    end_time: String::new(),
-                    file_uri: String::new(),
-                });
-            }
-        }
-    }
+        _ => {}
+    });
 
     entries
 }

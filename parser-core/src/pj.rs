@@ -127,45 +127,6 @@ fn fence_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[ \t]*(```|~~~)").unwrap())
 }
 
-/// タスク行（`- [ ]` / `- [x]` / `- [-]`）。`- [[ノート名]]` は `[` の次が `[` なので一致しない。
-fn task_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[ \t]*-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap())
-}
-
-/// ログ行（`- YYYY-MM-DD: 内容`）。時刻・時間範囲付きも許容する。
-fn log_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"^[ \t]*-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)",
-        )
-        .unwrap()
-    })
-}
-
-/// 時刻付きログ行（`- YYYY-MM-DD HH:MM: 内容` / `- YYYY-MM-DD HH:MM-HH:MM: 内容`）。
-/// 時刻の無いログは一致しない。インデントを取るので `log_re` とは別に引く。
-fn timed_log_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?:")
-            .unwrap()
-    })
-}
-
-/// インデント付きのタスク行。`task_re` と同じ判定だが先頭の空白を取る。
-fn indented_task_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap())
-}
-
-/// 箇条書き行（`- 内容`）。
-fn bullet_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[ \t]*-[ \t]+(.*)").unwrap())
-}
-
 /// 行末の括弧（`（45分・重・@PC）`）。
 fn trailing_paren_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -277,16 +238,18 @@ pub fn split_decision_meta(text: &str) -> Option<(String, String)> {
 /// `- [x]` / `- [-]` しか無い場合は「完了したが次を決めていない」状態なので `None` を返す。
 fn extract_next_action(section: Option<&Vec<String>>) -> Option<String> {
     let section = section?;
-    let task = task_re();
     for line in without_code_blocks(section) {
-        if let Some(caps) = task.captures(line) {
-            if &caps[1] == " " {
-                let text = caps[2].trim();
-                if text.is_empty() {
-                    continue;
-                }
-                return Some(text.to_string());
+        if let crate::scan::LineKind::Task {
+            status: crate::TaskStatus::Incomplete,
+            text,
+            ..
+        } = crate::scan::classify(line)
+        {
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
             }
+            return Some(text.to_string());
         }
     }
     None
@@ -297,14 +260,14 @@ fn extract_logs(section: Option<&Vec<String>>) -> Vec<PjLogEntry> {
     let Some(section) = section else {
         return Vec::new();
     };
-    let re = log_re();
     let mut logs: Vec<PjLogEntry> = without_code_blocks(section)
         .into_iter()
-        .filter_map(|line| {
-            re.captures(line).map(|caps| PjLogEntry {
-                date: caps[1].to_string(),
-                text: caps[2].trim().to_string(),
-            })
+        .filter_map(|line| match crate::scan::classify(line) {
+            crate::scan::LineKind::Log { date, text, .. } => Some(PjLogEntry {
+                date: date.to_string(),
+                text: text.trim().to_string(),
+            }),
+            _ => None,
         })
         .collect();
     // 日付の降順（同日は記載順を保つ安定ソート）
@@ -319,13 +282,14 @@ fn extract_backlog(section: Option<&Vec<String>>) -> Vec<String> {
     let Some(section) = section else {
         return Vec::new();
     };
-    let task = task_re();
-    let log = log_re();
-    let bullet = bullet_re();
+    // `bullet` は「タスクにもログにも一致しなかった `- ` 行」なので、
+    // 除外の判定はここでは要らない（syntax.md §3 の判定順がそれを保証する）
     without_code_blocks(section)
         .into_iter()
-        .filter(|line| !task.is_match(line) && !log.is_match(line))
-        .filter_map(|line| bullet.captures(line).map(|caps| caps[1].trim().to_string()))
+        .filter_map(|line| match crate::scan::classify(line) {
+            crate::scan::LineKind::Bullet { text, .. } => Some(text.trim().to_string()),
+            _ => None,
+        })
         .filter(|text| !text.is_empty())
         .collect()
 }
@@ -417,15 +381,6 @@ pub fn collect_document_refs(lines: &[String]) -> Vec<String> {
     refs
 }
 
-/// 行頭の空白幅。タスク行・ログ行の `^([ \t]*)` キャプチャと同じ数え方に揃える。
-///
-/// `trim_start` は Unicode 空白まで落とすので使えない。全角スペースで字下げした行は
-/// 正規表現側ではインデント 0 になるため、ここで 3（UTF-8 のバイト数）を返すと
-/// 帰属の判定が食い違う。
-fn indent_width(line: &str) -> usize {
-    line.len() - line.trim_start_matches([' ', '\t']).len()
-}
-
 /// journal 1日分の本文から「実働」を取り出す。
 ///
 /// 日付は文書のヘッダから受け取る。基準日（`today`）と同じ `&str` で渡していると
@@ -449,59 +404,34 @@ pub fn journal_work(lines: &[String], doc: &crate::DocumentHeader) -> Vec<Journa
     let Some(file_date) = doc.date.as_deref() else {
         return Vec::new();
     };
-    let task = indented_task_re();
-    let timed = timed_log_re();
-    let fence = fence_re();
 
     let mut result: Vec<JournalWork> = Vec::new();
-    // 参照を持つタスク行の (インデント, 参照名)。配下でない行が来たら閉じる
-    let mut current: Option<(usize, Vec<String>)> = None;
-    let mut in_code_block = false;
+    // 走査中のタスク行の参照。ログ 1 件ごとに `collect_refs` を引き直さないために持つ
+    let mut refs: Vec<String> = Vec::new();
 
-    for line in lines {
-        if fence.is_match(line) {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = task.captures(line) {
-            let refs = collect_refs(&caps[3]);
-            if refs.is_empty() {
-                current = None;
-                continue;
-            }
-            if &caps[2] == "x" {
+    crate::scan::scan(lines, |ev| match ev {
+        crate::scan::Event::Task(t) => {
+            refs = collect_refs(&t.text);
+            if !refs.is_empty() && t.status == crate::TaskStatus::Completed {
                 result.push(JournalWork {
                     date: file_date.to_string(),
                     refs: refs.clone(),
                 });
             }
-            current = Some((caps[1].len(), refs));
-            continue;
         }
-
-        let Some((indent, refs)) = current.as_ref() else {
-            continue;
-        };
-        // ログ行はタスク行より深いインデントであることを必須にする
-        if let Some(caps) = timed.captures(line) {
-            if caps[1].len() > *indent {
-                result.push(JournalWork {
-                    date: caps[2].to_string(),
-                    refs: refs.clone(),
-                });
-                continue;
-            }
-        }
-        // タスクの配下でない行（見出し・兄弟の箇条書き・段落）が来たら文脈を閉じる。
-        // 空行だけでは閉じない。ログの間に空行を挟む書き方を落とさないため
-        if !line.trim().is_empty() && indent_width(line) <= *indent {
-            current = None;
-        }
-    }
+        // 時刻の無いログは実働にしない。journal では「やった記録」ではなく
+        // 予定・メモとしても日付行が書かれるため（requirements.md 6.1）
+        crate::scan::Event::Log {
+            task: Some(_),
+            date,
+            time: Some(_),
+            ..
+        } if !refs.is_empty() => result.push(JournalWork {
+            date: date.to_string(),
+            refs: refs.clone(),
+        }),
+        _ => {}
+    });
 
     result
 }
