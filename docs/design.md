@@ -230,6 +230,91 @@ enum ScheduleItem {
 
 `file_uri` は `parse_schedule_internal` の時点では常に `""` で、`build_schedule_data_internal` が埋める。中間表現に対する事後条件と最終出力に対する事後条件が異なる唯一の箇所である。
 
+§5.2〜§5.3 の型をまとめると次のとおり。実線のひし形は合成（所有）、破線の矢印は関数による導出を表す。多重度 `1..*` は I-6（空グループを出力しない）の帰結である。
+
+```mermaid
+classDiagram
+    direction TB
+
+    class TaskStatus {
+        <<enumeration>>
+        Incomplete
+        Completed
+        Cancelled
+    }
+
+    class FileInput {
+        +String file_name
+        +String file_uri
+        +Vec~String~ lines
+    }
+
+    class ParsedTask {
+        +TaskStatus status
+        +String text
+        +usize line
+        +String log
+    }
+
+    class ParsedTaskWithDate {
+        +TaskStatus status
+        +String text
+        +usize line
+        +String log
+        +String date
+        +Vec~String~ context
+    }
+
+    class TreeDateGroup {
+        +String date_key
+        +String label
+        +bool is_today
+        +usize completed_count
+        +usize total_count
+    }
+
+    class TreeFileGroup {
+        +String file_name
+        +String file_uri
+    }
+
+    class TreeTaskData {
+        +TaskStatus status
+        +String text
+        +String body
+        +Option~String~ meta
+        +String file_uri
+        +usize line
+        +String log
+        +String date
+        +Vec~String~ context
+    }
+
+    class ScheduleEntry {
+        +String task_text
+        +usize task_line
+        +TaskStatus status
+        +String log_text
+        +usize log_line
+        +String time
+        +String end_time
+        +String file_uri
+    }
+
+    TreeDateGroup "1" *-- "1..*" TreeFileGroup : file_groups
+    TreeFileGroup "1" *-- "1..*" TreeTaskData : tasks
+
+    FileInput ..> ParsedTask : parse_tasks_internal
+    FileInput ..> ParsedTaskWithDate : parse_all_dates_internal
+    FileInput ..> ScheduleEntry : build_schedule_data_internal
+    ParsedTaskWithDate ..> TreeTaskData : build_tree_data_internal
+
+    ParsedTask --> TaskStatus
+    ParsedTaskWithDate --> TaskStatus
+    TreeTaskData --> TaskStatus
+    ScheduleEntry --> TaskStatus
+```
+
 ### 5.4 PJ ノート（`parser-core::pj`）
 
 ```rust
@@ -320,6 +405,70 @@ flowchart TD
 
 時刻の**ない**ログはどちらの枝にも入らない。ジャーナルでは時刻なしログが予定・メモとしても書かれるため、含めると言及と区別がつかなくなる。
 
+§5.4〜§5.5 の型をまとめると次のとおり。`PjNote` が `PjHealth` を、`FrontMatterParsed` が `ProjectStatus` を持つのに対し、`JournalWork` はどの型にも所有されない独立した観測値である（`cli` 側が日付の最大値を採るためだけに使う）。
+
+```mermaid
+classDiagram
+    direction TB
+
+    class ProjectStatus {
+        <<enumeration>>
+        Active
+        Someday
+        Done
+    }
+
+    class PjHealth {
+        <<enumeration>>
+        Ok
+        Unclarified
+        NoNext
+    }
+
+    class FrontMatterParsed {
+        +Option~ProjectStatus~ project
+        +Option~String~ repo
+        +Option~String~ completed
+    }
+
+    class PjNote {
+        +Option~String~ next_action
+        +Option~String~ next_action_body
+        +Option~String~ next_action_meta
+        +bool next_action_ai
+        +PjHealth health
+        +Vec~String~ backlog
+        +log_last() Option~str~
+    }
+
+    class PjLogEntry {
+        +String date
+        +String text
+    }
+
+    class JournalWork {
+        +String date
+        +Vec~String~ refs
+    }
+
+    class WikiLinkMatch {
+        +String name
+        +usize start
+        +usize end
+    }
+
+    class NormalizedName {
+        +String name
+        +bool is_journal
+    }
+
+    PjNote "1" *-- "0..*" PjLogEntry : logs（日付降順）
+    PjNote --> PjHealth : 導出値
+    FrontMatterParsed --> ProjectStatus
+    WikiLinkMatch ..> NormalizedName : normalize_wiki_name
+    NormalizedName ..> JournalWork : collect_refs で refs を作る
+```
+
 ### 5.6 PJ 集約（`cli::pj`）
 
 `PjProject` は `PjNote`（純粋）と外部世界の観測（git・ジャーナル・ファイルシステム）の合成である。
@@ -387,6 +536,52 @@ struct PjOutput { generated: String, fetched: bool, fetch_failed: Vec<String>, p
 ```
 
 `fetch_failed` が空でないとき、そこに挙がったリポジトリを持つ PJ の `repo_last` / `ahead_count` は信用できない。**この不確かさを `PjProject` 側に潰さず、出力の最上位に残す**のは、利用側が「古いかもしれない値」と「観測できなかった値（`None`）」を区別できるようにするため。
+
+クレート境界をまたぐ所有関係は次のとおり。`PjLogEntry` と `PjHealth` は `parser-core` の型のまま `cli` の出力に載る（`cli` 側で写し替えない）。
+
+```mermaid
+classDiagram
+    direction LR
+
+    class PjOutput {
+        <<cli::pj>>
+        +String generated
+        +bool fetched
+        +Vec~String~ fetch_failed
+    }
+
+    class PjProject {
+        <<cli::pj>>
+        a. ノート本文由来
+        b. ファイルシステム由来
+        c. git 由来
+        d. ジャーナル由来
+        e. today との差で導出
+    }
+
+    class PjNote {
+        <<parser-core::pj>>
+    }
+
+    class FrontMatterParsed {
+        <<parser-core>>
+    }
+
+    class PjLogEntry {
+        <<parser-core::pj>>
+    }
+
+    class PjHealth {
+        <<parser-core::pj>>
+    }
+
+    PjOutput "1" *-- "0..*" PjProject : projects
+    PjNote "1" *-- "0..*" PjLogEntry : logs（切り詰め前）
+    PjProject "1" *-- "0..3" PjLogEntry : logs（LOG_LIMIT = 3）
+    PjProject --> PjHealth : health
+    PjNote ..> PjProject : (a) 本文由来のフィールド
+    FrontMatterParsed ..> PjProject : (a) status / repo / completed
+```
 
 ## 6. 不変条件
 
