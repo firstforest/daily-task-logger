@@ -51,22 +51,47 @@ Document                          -- md ファイル 1 つ。一次情報はす�
   ├ front : Option<FrontMatter>   -- 内容から決まる
   └ lines : [Line]
 
+When                              -- いつ。粒度が 2 段階ある
+  = Day(Date)                     -- 日付だけ決まっている
+  | Moment(Date, Time)            -- その日の中の時刻まで決まっている
+
+Duration                          -- どれくらいかかるか（「45分」「2時間」）
+
 Task                              -- Document 内のチェックボックス行
-  ├ at     : (Document, Line)     -- 同一性。どの Document に収容されているかを含む
-  ├ status : Todo | Done | Cancelled
-  ├ text   : String
-  └ refs   : Set<Ref>             -- 参照。§2.3。Task は Project を知らない
+  ├ at       : (Document, Line)   -- 同一性。どの Document に収容されているかを含む
+  ├ status   : Todo | Done | Cancelled
+  ├ text     : String
+  ├ refs     : Set<Ref>           -- 参照。§2.3。Task は Project を知らない
+  ├ when     : Option<When>       -- いつやるか
+  ├ duration : Option<Duration>   -- どれくらいかかるか
+  └ deadline : Option<Date>       -- いつまでにやるか
 
 Ref                               -- 文中に書かれた参照
   = WikiName(String)              -- [[名前]]
   | Tag(String)                   -- #タグ
 
-Log                               -- 日付付きの記録。文書のどこにでも書ける
-  ├ at   : (Document, Line)
-  ├ date : Date                   -- 行に書かれた日付、または文脈から継承したもの
-  ├ time : Option<Time>           -- 実働判定はこの有無で決まる（§2.5）
-  └ text : String
+Log                               -- 起きたことの記録。文書のどこにでも書ける
+  ├ at       : (Document, Line)
+  ├ when     : When               -- いつ起きたか。必ず持つ
+  ├ duration : Option<Duration>   -- どれくらいかかったか
+  └ text     : String
 ```
+
+**「いつ」と「どれくらい」は独立した 2 つの軸である。** 書きたいものは 3 通りあり、どれも書けなければならない — 日付のみ（`Day`）、日付とその日の中の時刻（`Moment`）、かかる長さ（`Duration`）。
+
+この形にすると 3 つのことが同時に片付く。
+
+| | 現状 | `When` / `Duration` にすると |
+| --- | --- | --- |
+| 粒度 | `date: String` + `time: Option<Time>` の 2 フィールド。「日付だけ」と「時刻まで」の区別が `Option` の有無に潰れている | 直和なので粒度が構造に現れ、判別が全域になる |
+| 開始終了 | `10:00-11:00` を `time` / `end_time` の 2 フィールドで持つ | `Moment(10:00)` + `Duration(60分)` の**表記**にすぎない。`end_time` は導出値（`when + duration`） |
+| 所要時間 | 判断メタデータの `（45分）` とログの開始終了に**同じものが 2 箇所**ある。前者はスケジュールに使われず、後者は `list` に出ない | `Duration` 1 つ |
+
+**Task が自分の `when` を持つことが、計画と実績の分離である。** 現状 Task は時刻を持たず、予定を入れるにも配下に Log を書くしかない。結果 `Log` が「予定の枠」と「起きた時刻」を兼ね、スケジュールグリッドは計画列と実績列を**同じ時刻セルに置かざるを得ない**（`plan-cell` はタスク本文、`actual-cell` はログ本文で、行が置かれる時刻はログ由来）。「10:00-11:00 の予定が実際は 10:15-11:20 だった」というずれが表現できないのはこのためである（§11 G-11）。
+
+**Task の `when` は日付を明示的に書く。** `Document.date` から暗黙に補わない。補うことにすると、PJ ノートに書いた予定が日付を持てなくなる。
+
+Log は例外で、ジャーナルのトップレベル時刻メモ（`- HH:MM: 本文`）だけが日付を `# YYYY-MM-DD` 見出しから受け取る。これは表層構文の省略記法であって、できあがる `Log.when` は日付を含んだ `Moment` である（§4）。
 
 **Log の Task への帰属は関係であって、Log の属性ではない。**
 
@@ -258,11 +283,11 @@ mention(pj) = max { d.date | d ∈ Journals, hits(pj, refs(d の全文)) }
 work(pj)    = max { w      | d ∈ Journals, t ∈ Tasks(d), hits(pj, t.refs), w ∈ worked(t) }
 
 logs(t)     = { l ∈ Log | attach(l) = Some(t) }                   -- §2.1
-worked(t)   = { d.date   | t.status = Done }
-            ∪ { log.date | log ∈ logs(t), log.time ≠ None }
+worked(t)   = { d.date | t.status = Done }
+            ∪ { date(log.when) | log ∈ logs(t), log.when が Moment }
 ```
 
-- 時刻の無いログは実働にしない。ジャーナルでは「やった記録」ではなく予定・メモとしても書かれるため。
+- `Day` のログは実働にしない（`Moment` だけを見る）。ジャーナルでは「やった記録」ではなく予定・メモとしても日付行が書かれるため。**ただしこの規則の根拠は、Task が `when` を持つと消える。** 予定が Task 側に移れば Log は常に記録になるので、`Day` を実働に含めるかどうかは改めて決めることになる（§11 G-11）。
 - `max` を採る（走査順に依存させない）。時刻付きログは自分の日付を持つので、新しいジャーナルに前日ぶんを書き足せる。
 - 観測範囲を `Journals` に限る。Project ノート自身の `## ログ` は `log_last` が担当する別の観測である。
 
@@ -291,6 +316,8 @@ erDiagram
         Location at PK "Document と行番号"
         Status status "Todo / Done / Cancelled"
         String text "本文"
+        When when "いつやるか（任意）"
+        Duration duration "どれくらいかかるか（任意）"
     }
     REF {
         RefKind kind "WikiName / Tag"
@@ -301,8 +328,9 @@ erDiagram
         Status status "active / someday / done（完了日を含む）"
     }
     LOG {
-        Date date "行に書かれた日付、または文脈から継承"
-        Time time "任意。実働判定に使う"
+        When when "Day か Moment。実働判定は Moment だけ"
+        Duration duration "どれくらいかかったか（任意）"
+        String text "本文"
     }
     OBSERVATION {
         Date mention_last "ジャーナル由来"
@@ -326,6 +354,8 @@ erDiagram
 | --- | --- | --- |
 | `Date` | `YYYY-MM-DD` の暦日。辞書順 = 日付順 | `String` |
 | `Time` | `HH:MM`（正規化後は必ず 2 桁時） | `String` |
+| `When` | `Day(Date)` \| `Moment(Date, Time)`。§2.1 の目標であり、現状は `date` + `Option<Time>` の 2 フィールドに潰れている（§11 G-11） | （なし） |
+| `Duration` | 長さ。`45分` / `2時間` | （なし。`（45分）` は `String` のまま） |
 | `Indent` | 行頭空白の幅。**バイト数**で数え、タブは 1 とする | `usize` |
 | `Name` | Wiki リンクの正規化名（`.md` を落とし前後を trim した文字列） | `String` |
 | `Tag` | `#` に続く空白と `#` を含まない文字列 | `String` |
@@ -1021,6 +1051,9 @@ stateDiagram-v2
 | `Task` | `ParsedTask` / `ParsedTaskWithDate` / `ScheduleEntry` / `next_action: String` | G-3・G-7 |
 | `Log` | `ParsedTaskWithDate.log` / `ScheduleEntry` / `pj::PjLogEntry` の 3 通り | G-7 |
 | `attach(log)` | 型に無い。平坦化・空文字列判別・概念の欠落で表現している | G-7 |
+| `When` | `date: String` + `time: Option<Time>` の 2 フィールドに潰れている | G-11 |
+| `Duration` | 型に無い。`（45分）` は `meta` 文字列の一部、`10:00-11:00` は `end_time` | G-11 |
+| `Task.when`（計画） | 存在しない。配下の Log が兼ねている | G-11 |
 | `Ref` | 型として存在しない（`String`。名前とタグが混ざった `Vec<String>`） | G-2 |
 | `PjId` | 型として存在しない（`String`） | G-2 |
 | 層 1 収容 | `FileInput.file_uri` + `ParsedTask.line` | G-8 |
@@ -1124,6 +1157,30 @@ stateDiagram-v2
   | 誤検出 | 説明文中に日付行（`2026-08-01: 締切` など）を書くとログとして拾われる。セクションによる隔離が無くなるため、`## ログ` の外に書いた記録も拾えるようになるのと表裏である |
 
   P3 の例外（`PjHealth`）は残る。基盤が `next_action` から `tasks(pj)` に移るだけで、「他フィールドから決定的に導出される要約」という性格は変わらない。
+
+**G-11 Task が「いつ・どれくらい」を持たず、Log がそれを兼ねている。**
+
+- 現状: Task は時刻を持たない。予定を入れるには配下に日付付きの行を書くしかなく、その行は Log としても解釈される。結果 1 本の行が 3 つの意味を背負う。
+
+  | 用途 | 読み手 | 何を取るか |
+  | --- | --- | --- |
+  | スケジュールの枠（計画） | `parse_schedule_internal` | `time` / `end_time` |
+  | 実績のテキスト | スケジュールグリッドの実績列 | `log_text` |
+  | 実働の証拠 | `pj::journal_work` | 時刻の有無 |
+
+  **計画と実績の対比が成立していない。** `src/schedulePanel.ts` は計画列にタスク本文、実績列にログ本文を出すが、**行が置かれる時刻はログ由来の 1 つだけ**である。「10:00-11:00 の予定が実際は 10:15-11:20 だった」というずれを表現できない。requirements.md 3.5 の「計画（plan）と実績（actual）を対比できる構成」は、データモデル上は満たされていない。
+
+  所要時間も 2 箇所にある。判断メタデータの `（45分）` はスケジュールに使われず、ログの `10:00-11:00` は `list` に出ない。
+- 目標: §2.1 の `When` / `Duration`。Task が `when` / `duration` / `deadline` を持ち、Log は起きたことの記録に徹する。`10:00-11:00` は `Moment(10:00)` + `Duration(60分)` の表記になり、`end_time` は導出値として消える。
+- 影響:
+
+  | 影響 | 内容 |
+  | --- | --- |
+  | 記法 | タスク行に「いつ・どれくらい」を書けるようにする必要がある。判断メタデータ（`（45分・重・@PC）`）が既に所要時間と締切を持つので、そこを拡張するのが素直だが、表層構文の設計は別途詰める（§4） |
+  | 型 | `ScheduleEntry` の `time` / `end_time` が `When` + `Duration` に変わる。境界型なので JSON / WASM の表現が変わり、`schedulePanel.ts` の同時修正が要る（P5・§10 W-2） |
+  | スケジュール | グリッドが計画列と実績列に別々の時刻を持てるようになる。ずれの表示は新機能なので、UI の設計が要る |
+  | 実働判定 | 「時刻の無いログは実働と見なさない」の根拠が消える（§2.5）。予定が Task 側に移れば Log は常に記録になるため。`Day` を実働に含めるかは**未決** |
+  | 語彙 | `Time` の newtype 化（§10 W-1）と同時にやると手戻りが少ない。`When` は `Date` / `Time` を包む型なので、先に文字列のまま `When` を作ると二度手間になる |
 
 ## 12. 拡張の指針
 
