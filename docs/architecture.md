@@ -1,6 +1,14 @@
 # taski アーキテクチャ
 
-本ドキュメントは taski の構成・設計方針をまとめたものである。要求そのものは [requirements.md](requirements.md) を、ドメインモデル（目標形）は [domain.md](domain.md) を、Markdown の記法は [syntax.md](syntax.md) を、各クレートが持つ型・不変条件は [design.md](design.md) を参照。
+本ドキュメントは taski のコードが **どこに** 置かれ、どう組み上がるかを記述する。
+
+- **[requirements.md](requirements.md)** — *何を* 満たすか（要求）
+- **[syntax.md](syntax.md)** — *どう書くか*（記法。文書・行・行内）
+- **[domain.md](domain.md)** — *何が何であるか*（概念・関係・導出。目標形）
+- **[design.md](design.md)** — *どう表しているか*（現状の型・走査・不変条件・写像）
+- **本ドキュメント** — *どこに* 置くか（クレート構成・パイプライン・ビルド）
+
+ここで扱うのは**ファイルの配置と依存の向き**だけである。中身が何であるか（型・不変条件・記法・概念）は他の 4 つが持つ。
 
 ## 全体構成
 
