@@ -55,6 +55,24 @@ VS Code extension ("taski") that aggregates tasks from markdown files across the
 - **`cli/tests/<サブコマンド>_cli.rs`** — CLI の統合テスト。サブコマンドごとに 1 ファイル（`pj_cli.rs` / `list_cli.rs` / `schedule_cli.rs`）。一時ディレクトリを `$HOME` に見立てて実際のファイル・git リポジトリを作り、ビルド済みバイナリを起動して端から端まで検証する（`pj` の未反映検出が git のコミット日に依存し、構造化出力の契約はプロセスの標準出力でしか確かめられないため）。統合テストはファイルごとに別クレートなので、共通ヘルパ（`TempHome` 等）は `cli/tests/common/mod.rs` に置き各ファイルから `mod common;` で取り込む。
 - **`src/test/*.test.ts`** — WASM 越しの薄い回帰テストのみ。実行に VS Code インスタンスの起動が必要なので、網羅は Rust 側に寄せる。
 
+### 実データに対する回帰確認
+
+パーサーの走査・帰属・照合に手を入れたときは、単体テストに加えて **`~/taski` の実データで変更前後の出力を突き合わせる**。仕様テストは書いた条件しか見ないので、「実際のノートで何件落ちるか」はこれでしか分からない。
+
+```bash
+# 変更前に取る
+mise run build-cli && cp target/release/taski /tmp/taski-before
+/tmp/taski-before list --format json > /tmp/base-list.json
+/tmp/taski-before pj --format json --no-fetch > /tmp/base-pj.json
+# schedule は日付ごとなので直近ぶんを回す
+find ~/taski/journal -name '*.md' | sed 's|.*/||;s|\.md$||' | sort -r | head -40 > /tmp/dates.txt
+while read -r d; do /tmp/taski-before schedule --format json --date "$d"; done < /tmp/dates.txt > /tmp/base-sched.json
+
+# 変更後に同じものを取って diff する
+```
+
+`taski pj` は `ahead_count` / `unreported_count` が git の状態（作業中のコミット）で動くので、差分を見るときはこの 2 つを除くか、パーサー由来のフィールドだけを比べる。
+
 ### 単一テストの実行
 
 ```bash
