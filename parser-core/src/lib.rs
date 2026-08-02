@@ -1,4 +1,5 @@
 pub mod pj;
+pub mod scan;
 pub mod wiki_link;
 
 use std::collections::HashMap;
@@ -32,16 +33,6 @@ impl TaskStatus {
     }
 }
 
-// === Internal types ===
-
-struct CurrentTask {
-    indent: usize,
-    status: TaskStatus,
-    text: String,
-    line: usize,
-    context: Vec<String>,
-}
-
 // === Output types ===
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -67,12 +58,72 @@ pub struct ParsedTaskWithDate {
 
 // === Tree types ===
 
+/// Document のヘッダ — 本文（`lines`）とは別に、パスから決まる情報（docs/domain.md §1）。
+///
+/// 解析関数はファイルシステムに触れないので（design.md P1）、日付もパスも呼び出し側が
+/// 引数で渡す。渡す値が増えるほど取り違えが起きやすく、とくに `journal_work` は
+/// 「その文書の日付」と「基準日（`today`）」という同じ形の 2 つの日付を扱うため、
+/// 素の `&str` のままだと取り違えてもコンパイルが通ってしまう。
+/// 文書由来の値だけをこの型にまとめて区別する（docs/design.md G-8）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentHeader {
+    pub file_name: String,
+    pub file_uri: String,
+    /// パスが `journal/<YYYY>/<MM>/<YYYY-MM-DD>.md` のときだけ `Some`
+    pub date: Option<String>,
+}
+
+impl DocumentHeader {
+    /// ジャーナル 1 日分のヘッダ。
+    pub fn journal(date: impl Into<String>) -> Self {
+        let date = date.into();
+        DocumentHeader {
+            file_name: format!("{date}.md"),
+            file_uri: String::new(),
+            date: Some(date),
+        }
+    }
+
+    /// ファイル名と URI からヘッダを組み立てる。
+    ///
+    /// 日付はパス規約（`journal/<YYYY>/<MM>/<YYYY-MM-DD>.md`）だけで決まる（domain.md §1）。
+    /// 本文の日付見出しからは受け取らない。あれは走査中の文脈であって文書の属性ではない。
+    pub fn from_path(file_name: &str, file_uri: &str) -> Self {
+        DocumentHeader {
+            date: journal_date_of(file_name, file_uri),
+            file_name: file_name.to_string(),
+            file_uri: file_uri.to_string(),
+        }
+    }
+}
+
+/// パスがジャーナル規約に一致するときだけ、その文書の日付を返す。
+///
+/// ファイル名だけで判定すると `note/2026-08-01.md`（その日に取ったメモなど）が
+/// ジャーナル扱いになるので、`journal/` 配下であることも要求する。
+fn journal_date_of(file_name: &str, file_uri: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
+
+    let stem = file_name.strip_suffix(".md")?;
+    if !re.is_match(stem) || !file_uri.contains("/journal/") {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FileInput {
     pub file_name: String,
     pub file_uri: String,
     pub lines: Vec<String>,
+}
+
+impl FileInput {
+    pub fn header(&self) -> DocumentHeader {
+        DocumentHeader::from_path(&self.file_name, &self.file_uri)
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -129,140 +180,61 @@ pub struct ScheduleEntry {
 // === Parsing logic ===
 
 pub fn parse_tasks_internal(lines: &[String], target_date: &str) -> Vec<ParsedTask> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
     let mut tasks: Vec<ParsedTask> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: vec![],
-            });
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let log_content = &caps[3];
-
-                if date_str == target_date && date_indent > ct.indent {
-                    tasks.push(ParsedTask {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: log_content.to_string(),
-                    });
-                }
+    scan::scan(lines, |ev| {
+        if let scan::Event::Log {
+            task: Some(t),
+            date,
+            text,
+            ..
+        } = ev
+        {
+            if date == target_date {
+                tasks.push(ParsedTask {
+                    status: t.status,
+                    text: t.text.clone(),
+                    line: t.line,
+                    log: text.to_string(),
+                });
             }
         }
-    }
+    });
 
     tasks
 }
 
 pub fn parse_all_dates_internal(lines: &[String]) -> Vec<ParsedTaskWithDate> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re = Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?)?:[ \t]*(.*)").unwrap();
-    let heading_re = Regex::new(r"^(#{1,6})[ \t]+(.*)").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
     let mut tasks: Vec<ParsedTaskWithDate> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut current_task_has_log = false;
-    let mut current_headings: Vec<String> = Vec::new();
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = heading_re.captures(text) {
-            let level = caps[1].len();
-            current_headings.truncate(level - 1);
-            current_headings.push(caps[2].to_string());
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                if !current_task_has_log {
-                    tasks.push(ParsedTaskWithDate {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: String::new(),
-                        date: String::new(),
-                        context: ct.context.clone(),
-                    });
-                }
-            }
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: current_headings.clone(),
-            });
-            current_task_has_log = false;
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let log_content = &caps[3];
-
-                if date_indent > ct.indent {
-                    tasks.push(ParsedTaskWithDate {
-                        status: ct.status,
-                        text: ct.text.clone(),
-                        line: ct.line,
-                        log: log_content.to_string(),
-                        date: date_str.to_string(),
-                        context: ct.context.clone(),
-                    });
-                    current_task_has_log = true;
-                }
-            }
-        }
-    }
-
-    if let Some(ref ct) = current_task {
-        if !current_task_has_log {
-            tasks.push(ParsedTaskWithDate {
-                status: ct.status,
-                text: ct.text.clone(),
-                line: ct.line,
-                log: String::new(),
-                date: String::new(),
-                context: ct.context.clone(),
-            });
-        }
-    }
+    scan::scan(lines, |ev| match ev {
+        scan::Event::Log {
+            task: Some(t),
+            date,
+            text,
+            ..
+        } => tasks.push(ParsedTaskWithDate {
+            status: t.status,
+            text: t.text.clone(),
+            line: t.line,
+            log: text.to_string(),
+            date: date.to_string(),
+            context: t.context.clone(),
+        }),
+        // ログを 1 件も持たないタスクだけが「日付なし」の値を 1 個生む（design.md I-2）
+        scan::Event::TaskClosed {
+            task,
+            had_log: false,
+        } => tasks.push(ParsedTaskWithDate {
+            status: task.status,
+            text: task.text.clone(),
+            line: task.line,
+            log: String::new(),
+            date: String::new(),
+            context: task.context.clone(),
+        }),
+        _ => {}
+    });
 
     tasks
 }
@@ -272,6 +244,7 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
     let mut date_map: HashMap<String, Vec<(String, String, Vec<TreeTaskData>)>> = HashMap::new();
 
     for file in &files {
+        let doc = file.header();
         let parsed = parse_all_dates_internal(&file.lines);
         if parsed.is_empty() {
             continue;
@@ -294,7 +267,7 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
                     text: t.text,
                     body,
                     meta,
-                    file_uri: file.file_uri.clone(),
+                    file_uri: doc.file_uri.clone(),
                     line: t.line,
                     log: t.log,
                     date: t.date,
@@ -304,8 +277,8 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
 
         for (date, tasks) in by_date {
             date_map.entry(date).or_default().push((
-                file.file_name.clone(),
-                file.file_uri.clone(),
+                doc.file_name.clone(),
+                doc.file_uri.clone(),
                 tasks,
             ));
         }
@@ -444,102 +417,45 @@ fn pad_time(time: &str) -> String {
 }
 
 pub fn parse_schedule_internal(lines: &[String], target_date: &str) -> Vec<ScheduleEntry> {
-    let task_re = Regex::new(r"^([ \t]*)-[ \t]*\[([ x-])\][ \t]*(.*)").unwrap();
-    let date_re =
-        Regex::new(r"^([ \t]*)-[ \t]*(\d{4}-\d{2}-\d{2})(?:[ \t]+(\d{1,2}:\d{2})(?:-(\d{1,2}:\d{2}))?)?:[ \t]*(.*)").unwrap();
-    let time_memo_re = Regex::new(r"^-[ \t](\d{1,2}:\d{2}):[ \t](.+)").unwrap();
-    let heading_date_re = Regex::new(r"^#[ \t]+(\d{4}-\d{2}-\d{2})").unwrap();
-    let fence_re = Regex::new(r"^[ \t]*(```|~~~)").unwrap();
-
-    // ジャーナルファイルの日付見出しが target_date と一致するか判定。
-    // フェンス内は全解析から除外するので、ここでも走査しながら内外を追う
-    // （記法の例として ``` の中に書いた `# YYYY-MM-DD` で時刻メモを発火させない）
-    let is_target_date_file = {
-        let mut in_code_block = false;
-        lines.iter().any(|line| {
-            if fence_re.is_match(line) {
-                in_code_block = !in_code_block;
-                return false;
-            }
-            if in_code_block {
-                return false;
-            }
-            heading_date_re
-                .captures(line)
-                .is_some_and(|caps| &caps[1] == target_date)
-        })
-    };
+    // トップレベル時刻メモは、対象日と一致する日付見出しがこの文書にあるときだけ発火する
+    // （syntax.md §3.4）。見出しより後ろにあることは要求されないので、走査より前に決める
+    let is_target_date_file = scan::has_date_heading(lines, target_date);
 
     let mut entries: Vec<ScheduleEntry> = Vec::new();
-    let mut current_task: Option<CurrentTask> = None;
-    let mut in_code_block = false;
 
-    for (i, text) in lines.iter().enumerate() {
-        if fence_re.is_match(text) {
-            in_code_block = !in_code_block;
-            continue;
+    scan::scan(lines, |ev| match ev {
+        scan::Event::Log {
+            task: Some(t),
+            line,
+            date,
+            time,
+            end_time,
+            text,
+            ..
+        } if date == target_date => entries.push(ScheduleEntry {
+            task_text: t.text.clone(),
+            task_line: t.line,
+            status: t.status,
+            log_text: text.to_string(),
+            log_line: line,
+            time: pad_time(time.unwrap_or("")),
+            end_time: pad_time(end_time.unwrap_or("")),
+            file_uri: String::new(),
+        }),
+        scan::Event::TimeMemo { line, time, text } if is_target_date_file => {
+            entries.push(ScheduleEntry {
+                task_text: String::new(),
+                task_line: line,
+                status: TaskStatus::Incomplete,
+                log_text: text.to_string(),
+                log_line: line,
+                time: pad_time(time),
+                end_time: String::new(),
+                file_uri: String::new(),
+            })
         }
-        if in_code_block {
-            continue;
-        }
-
-        if let Some(caps) = task_re.captures(text) {
-            current_task = Some(CurrentTask {
-                indent: caps[1].len(),
-                status: TaskStatus::from_marker(&caps[2]),
-                text: caps[3].to_string(),
-                line: i,
-                context: vec![],
-            });
-            continue;
-        }
-
-        if let Some(caps) = date_re.captures(text) {
-            if let Some(ref ct) = current_task {
-                let date_indent = caps[1].len();
-                let date_str = &caps[2];
-                let time_str = caps.get(3).map_or("", |m| m.as_str());
-                let end_time_str = caps.get(4).map_or("", |m| m.as_str());
-                let log_content = &caps[5];
-
-                if date_str == target_date && date_indent > ct.indent {
-                    // 時刻を2桁にパディング
-                    let time_padded = pad_time(time_str);
-                    let end_time_padded = pad_time(end_time_str);
-                    entries.push(ScheduleEntry {
-                        task_text: ct.text.clone(),
-                        task_line: ct.line,
-                        status: ct.status,
-                        log_text: log_content.to_string(),
-                        log_line: i,
-                        time: time_padded,
-                        end_time: end_time_padded,
-                        file_uri: String::new(),
-                    });
-                }
-            }
-            continue;
-        }
-
-        // 時刻メモ: ジャーナルファイル内のトップレベル「- HH:MM: テキスト」行
-        if is_target_date_file {
-            if let Some(caps) = time_memo_re.captures(text) {
-                let time_str = &caps[1];
-                let memo_text = &caps[2];
-                let time_padded = pad_time(time_str);
-                entries.push(ScheduleEntry {
-                    task_text: String::new(),
-                    task_line: i,
-                    status: TaskStatus::Incomplete,
-                    log_text: memo_text.to_string(),
-                    log_line: i,
-                    time: time_padded,
-                    end_time: String::new(),
-                    file_uri: String::new(),
-                });
-            }
-        }
-    }
+        _ => {}
+    });
 
     entries
 }
@@ -551,9 +467,10 @@ pub fn build_schedule_data_internal(
     let mut all_entries: Vec<ScheduleEntry> = Vec::new();
 
     for file in &files {
+        let doc = file.header();
         let mut entries = parse_schedule_internal(&file.lines, target_date);
         for entry in &mut entries {
-            entry.file_uri = file.file_uri.clone();
+            entry.file_uri = doc.file_uri.clone();
         }
         all_entries.extend(entries);
     }
@@ -572,12 +489,48 @@ pub fn build_schedule_data_internal(
 
 // === Front matter ===
 
+/// front matter の `project:` に書ける 3 つの値。
+///
+/// 完了日を含まない「種別」なので、`--status` の絞り込みと表示ラベルはこちらで行う。
+/// 関与の状態そのものは [`ProjectState`]。
 #[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
     Active,
     Someday,
     Done,
+}
+
+/// PJ の関与の状態（docs/domain.md §2）。
+///
+/// `completed` は `done` のときだけ意味を持つので状態の中に畳む。独立したフィールドに
+/// すると `active` かつ `completed: 2026-01-01` という無意味な組み合わせが表現できて
+/// しまう。front matter の 2 キー表記（`project:` / `completed:`）は変えず、読み取った
+/// あとの型だけを畳んでいる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectState {
+    Active,
+    Someday,
+    Done { completed: Option<String> },
+}
+
+impl ProjectState {
+    /// 完了日を落とした種別。
+    pub fn status(&self) -> ProjectStatus {
+        match self {
+            ProjectState::Active => ProjectStatus::Active,
+            ProjectState::Someday => ProjectStatus::Someday,
+            ProjectState::Done { .. } => ProjectStatus::Done,
+        }
+    }
+
+    /// 完了日。`done` 以外では常に `None`。
+    pub fn completed(&self) -> Option<&str> {
+        match self {
+            ProjectState::Done { completed } => completed.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Debug, Default)]
@@ -610,17 +563,24 @@ pub fn parse_front_matter(lines: &[String]) -> Option<FrontMatterParsed> {
     }
     let fm: FrontMatter = serde_yml::from_str(&body).ok()?;
     Some(FrontMatterParsed {
-        project: fm.project,
+        state: fm.project.map(|status| match status {
+            ProjectStatus::Active => ProjectState::Active,
+            ProjectStatus::Someday => ProjectState::Someday,
+            // `completed:` を拾うのは `done` のときだけ。`active` に添えられた完了日は
+            // 意味を持たないので、ここで落として型から表現できなくする
+            ProjectStatus::Done => ProjectState::Done {
+                completed: fm.completed,
+            },
+        }),
         repo: fm.repo,
-        completed: fm.completed,
     })
 }
 
 #[derive(Debug, Default, PartialEq)]
 pub struct FrontMatterParsed {
-    pub project: Option<ProjectStatus>,
+    /// `project:` が無ければ `None`（＝ PJ ノートではない）
+    pub state: Option<ProjectState>,
     pub repo: Option<String>,
-    pub completed: Option<String>,
 }
 
 // === Tag extraction ===
@@ -639,21 +599,49 @@ pub fn extract_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `project: active` が front matter にあればファイル名 (拡張子除去・空白は `_`) を
-/// 唯一のタグとして返す。`someday`（棚上げ）・`done`・未指定の場合は空配列。
+/// front matter の `project:` の値。PJ ノートでなければ `None`。
+///
+/// 表示側が「棚上げ・完了の PJ を一覧に出すか」を決めるために引く（[`visible_file_tags`]）。
+pub fn project_status(lines: &[String]) -> Option<ProjectStatus> {
+    parse_front_matter(lines)?
+        .state
+        .as_ref()
+        .map(ProjectState::status)
+}
+
+/// PJ ノートのファイル名を、そのファイル内の全タスクのタグとして返す（docs/domain.md §3）。
+///
+/// **`project:` の値は見ない。** これは層 1（収容）と層 2（参照）だけで決まる導出で、
+/// 「棚上げか完了か」という層 4 の情報を混ぜてはならない。かつては
+/// `project: active` を条件にしており、「どの PJ か」（事実）に「表示するか」（判断）が
+/// 混入していた（design.md G-1）。絞り込みは [`visible_file_tags`] の役目。
 pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
     let Some(fm) = parse_front_matter(lines) else {
         return Vec::new();
     };
-    if fm.project != Some(ProjectStatus::Active) {
+    if fm.state.is_none() {
         return Vec::new();
     }
     let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
-    let tag = stem.replace(' ', "_");
+    // 照合キーは `cli::pj` の言及・実働の突き合わせと同じ関数から出す（design.md P4）
+    let tag = wiki_link::match_key(stem);
     if tag.is_empty() {
         return Vec::new();
     }
     vec![tag]
+}
+
+/// タグ別ビューに出すファイル単位タグ。**導出ではなく表示の方針である。**
+///
+/// `someday`（着手を棚上げ）・`done`（完了済み）の PJ を一覧に出さないのは、事実では
+/// なく判断である。判断は導出（[`extract_file_tags`]）から切り離すが、VS Code のタグ別
+/// ビューと `taski list --tag` の 2 つのビューが同じ方針を持つ必要があるので、方針
+/// そのものはここに 1 つだけ置いて共有する（design.md P4）。
+pub fn visible_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
+    match project_status(lines) {
+        Some(ProjectStatus::Active) => extract_file_tags(lines, file_name),
+        _ => Vec::new(),
+    }
 }
 
 // === Tests ===
@@ -1656,6 +1644,36 @@ mod tests {
         assert_eq!(result[0].log, "ログ");
     }
 
+    // --- DocumentHeader tests ---
+
+    #[test]
+    fn test_header_takes_date_from_journal_path() {
+        let h = DocumentHeader::from_path(
+            "2026-08-01.md",
+            "file:///Users/u/taski/journal/2026/08/2026-08-01.md",
+        );
+        assert_eq!(h.date.as_deref(), Some("2026-08-01"));
+    }
+
+    #[test]
+    fn test_header_date_requires_journal_directory() {
+        // その日に取ったメモを `note/2026-08-01.md` に置いてもジャーナルにはしない
+        let h = DocumentHeader::from_path(
+            "2026-08-01.md",
+            "file:///Users/u/taski/note/2026-08-01.md",
+        );
+        assert_eq!(h.date, None);
+    }
+
+    #[test]
+    fn test_header_date_requires_date_shaped_name() {
+        let h = DocumentHeader::from_path(
+            "メモ.md",
+            "file:///Users/u/taski/journal/2026/08/メモ.md",
+        );
+        assert_eq!(h.date, None);
+    }
+
     // --- parse_front_matter tests ---
 
     #[test]
@@ -1668,28 +1686,28 @@ mod tests {
             "- [ ] タスク",
         ]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Active));
+        assert_eq!(fm.state, Some(ProjectState::Active));
     }
 
     #[test]
     fn test_parse_front_matter_project_someday() {
         let l = lines(&["---", "project: someday", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Someday));
+        assert_eq!(fm.state, Some(ProjectState::Someday));
     }
 
     #[test]
     fn test_parse_front_matter_project_done() {
         let l = lines(&["---", "project: done", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Done));
+        assert_eq!(fm.state, Some(ProjectState::Done { completed: None }));
     }
 
     #[test]
     fn test_parse_front_matter_project_missing() {
         let l = lines(&["---", "other: value", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, None);
+        assert_eq!(fm.state, None);
     }
 
     #[test]
@@ -1714,7 +1732,7 @@ mod tests {
     fn test_parse_front_matter_empty_body() {
         let l = lines(&["---", "---"]);
         let fm = parse_front_matter(&l).expect("empty front matter is valid");
-        assert_eq!(fm.project, None);
+        assert_eq!(fm.state, None);
     }
 
     #[test]
@@ -1735,8 +1753,21 @@ mod tests {
         // クォートなしの日付が String として読めること（実データはこの書き方）
         let l = lines(&["---", "project: done", "completed: 2026-05-31", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Done));
-        assert_eq!(fm.completed.as_deref(), Some("2026-05-31"));
+        assert_eq!(
+            fm.state,
+            Some(ProjectState::Done {
+                completed: Some(s("2026-05-31")),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_front_matter_completed_is_dropped_unless_done() {
+        // `active` に添えられた完了日は状態として無意味なので型から落とす（G-9）
+        let l = lines(&["---", "project: active", "completed: 2026-05-31", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.state, Some(ProjectState::Active));
+        assert_eq!(fm.state.as_ref().and_then(ProjectState::completed), None);
     }
 
     #[test]
@@ -1744,14 +1775,14 @@ mod tests {
         let l = lines(&["---", "project: active", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
         assert_eq!(fm.repo, None);
-        assert_eq!(fm.completed, None);
+        assert_eq!(fm.state.as_ref().and_then(ProjectState::completed), None);
     }
 
     #[test]
     fn test_parse_front_matter_unknown_field_ignored() {
         let l = lines(&["---", "project: active", "future_field: 何か", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Active));
+        assert_eq!(fm.state, Some(ProjectState::Active));
     }
 
     // --- extract_file_tags tests ---
@@ -1772,17 +1803,28 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_file_tags_project_someday() {
-        let l = lines(&["---", "project: someday", "---"]);
-        let empty: Vec<String> = vec![];
-        assert_eq!(extract_file_tags(&l, "projectA.md"), empty);
+    fn test_extract_file_tags_ignores_project_value() {
+        // 導出は層 1・2 で完結する。`someday` / `done` でもタグは付く（G-1）
+        for value in ["active", "someday", "done"] {
+            let l = lines(&["---", &format!("project: {value}"), "---"]);
+            assert_eq!(
+                extract_file_tags(&l, "projectA.md"),
+                vec![s("projectA")],
+                "project: {value}"
+            );
+        }
     }
 
     #[test]
-    fn test_extract_file_tags_project_done() {
-        let l = lines(&["---", "project: done", "---"]);
+    fn test_visible_file_tags_hides_someday_and_done() {
+        // 「棚上げ・完了を一覧に出さない」のは表示の方針であって導出ではない
         let empty: Vec<String> = vec![];
-        assert_eq!(extract_file_tags(&l, "projectA.md"), empty);
+        for value in ["someday", "done"] {
+            let l = lines(&["---", &format!("project: {value}"), "---"]);
+            assert_eq!(visible_file_tags(&l, "projectA.md"), empty, "project: {value}");
+        }
+        let l = lines(&["---", "project: active", "---"]);
+        assert_eq!(visible_file_tags(&l, "projectA.md"), vec![s("projectA")]);
     }
 
     #[test]

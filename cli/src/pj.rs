@@ -15,15 +15,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
-use parser_core::pj::{collect_document_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
-use parser_core::{parse_front_matter, ProjectStatus};
+
+use crate::docs::{journal_files_desc, note_files};
+use parser_core::pj::{
+    collect_document_refs, journal_work, parse_pj_note, PjHealth, PjId, PjLogEntry,
+};
+use parser_core::wiki_link::match_key;
+use parser_core::{parse_front_matter, DocumentHeader, ProjectState, ProjectStatus};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 /// JSON に出す1 PJ 分の集約結果。
 #[derive(Serialize, Debug, Clone)]
 pub struct PjProject {
-    pub name: String,
+    pub name: PjId,
     pub path: String,
     pub status: String,
     pub repo: Option<String>,
@@ -198,36 +203,6 @@ fn note_last_updated(base_dir: &Path, today: &str) -> HashMap<String, String> {
     }
 }
 
-/// journal ファイルを新しい順に並べる（ファイル名が `YYYY-MM-DD.md` のものだけを対象にする）。
-fn journal_files_desc(base_dir: &Path) -> Vec<(String, PathBuf)> {
-    let mut files: Vec<(String, PathBuf)> = Vec::new();
-    collect_journal_files(&base_dir.join("journal"), &mut files);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-    files
-}
-
-fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_journal_files(&path, files);
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_string()) else {
-            continue;
-        };
-        if NaiveDate::parse_from_str(&stem, "%Y-%m-%d").is_ok() {
-            files.push((stem, path));
-        }
-    }
-}
-
 /// journal から取れる PJ ごとの日付。
 ///
 /// 「言及」と「実働」を分けて持つ。言及だけを見ると、`## 今日の候補` に載っただけ・
@@ -235,9 +210,9 @@ fn collect_journal_files(dir: &Path, files: &mut Vec<(String, PathBuf)>) {
 /// 停滞と言及を分けているのと同じ理由で、言及と実働も分ける。
 struct JournalDates {
     /// `[[名前]]` / `#タグ` で最後に言及された日
-    mention: HashMap<String, String>,
+    mention: HashMap<PjId, String>,
     /// 実働（完了したタスク・時刻付きログ）が最後にあった日
-    work: HashMap<String, String>,
+    work: HashMap<PjId, String>,
 }
 
 /// journal で各 PJ が最後に言及された日と、最後に実働があった日を取る。
@@ -245,22 +220,21 @@ struct JournalDates {
 /// 新しい日付から順に見て、全 PJ の両方が見つかった時点で打ち切る。
 /// 言及と実働で同じファイルを2度読まないよう、1回の走査でまとめて集める。
 /// 基準日より後の journal（明日のタスクを先に書いた場合など）は見ない。
-/// 空白を含む PJ 名は `#タグ` で書けないので、実質 `[[名前]]` のみが効く。
-fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates {
-    let mut mention: HashMap<String, String> = HashMap::new();
-    let mut work: HashMap<String, String> = HashMap::new();
+///
+/// 照合は参照側・PJ 名側の両方に `match_key` を掛けてから比較する（domain.md §4）。
+/// `[[在庫 管理]]` と `#在庫_管理` はどちらも `在庫_管理` に落ちるので、1 回の比較で
+/// 両方の表記に当たる。
+fn journal_dates(base_dir: &Path, names: &[PjId], today: &str) -> JournalDates {
+    let mut mention: HashMap<PjId, String> = HashMap::new();
+    let mut work: HashMap<PjId, String> = HashMap::new();
     if names.is_empty() {
         return JournalDates { mention, work };
     }
 
-    // PJ 名 → ファイル単位タグ（`#タグ` は空白を書けないので `_` 区切り）
-    let targets: Vec<(String, String)> = names
-        .iter()
-        .map(|name| (name.clone(), name.replace(' ', "_")))
-        .collect();
+    let targets: Vec<(&PjId, String)> = names.iter().map(|id| (id, id.match_key())).collect();
 
-    let mut remaining_mention: HashSet<&str> = targets.iter().map(|(n, _)| n.as_str()).collect();
-    let mut remaining_work: HashSet<&str> = remaining_mention.clone();
+    let mut remaining_mention: HashSet<&PjId> = targets.iter().map(|(id, _)| *id).collect();
+    let mut remaining_work: HashSet<&PjId> = remaining_mention.clone();
 
     for (date, path) in journal_files_desc(base_dir) {
         if remaining_mention.is_empty() && remaining_work.is_empty() {
@@ -279,15 +253,18 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
             // 片方だけが `[[名前.md]]` を拾うと「実働はあるのに言及が null」という
             // 成り立たない組み合わせが出る（実働は言及の部分集合）。
             // フェンス内を飛ばす点も実働側と揃える（`collect_document_refs`）
-            let refs: HashSet<String> = collect_document_refs(&lines).into_iter().collect();
+            let refs: HashSet<String> = collect_document_refs(&lines)
+                .iter()
+                .map(|r| match_key(r))
+                .collect();
 
-            for (name, tag) in &targets {
-                if !remaining_mention.contains(name.as_str()) {
+            for (id, key) in &targets {
+                if !remaining_mention.contains(*id) {
                     continue;
                 }
-                if refs.contains(name.as_str()) || refs.contains(tag.as_str()) {
-                    mention.insert(name.clone(), date.clone());
-                    remaining_mention.remove(name.as_str());
+                if refs.contains(key.as_str()) {
+                    mention.insert((*id).clone(), date.clone());
+                    remaining_mention.remove(*id);
                 }
             }
         }
@@ -297,26 +274,24 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
         }
         // 参照名 → そのファイルでの最新の実働日。時刻付きログは自分の日付を持つので、
         // ファイル名の日付と一致しないことがある
-        let works = journal_work(&lines, &date);
-        let mut latest: HashMap<&str, &str> = HashMap::new();
+        let works = journal_work(&lines, &DocumentHeader::journal(&date));
+        let mut latest: HashMap<String, &str> = HashMap::new();
         for w in works.iter().filter(|w| !is_future(&w.date, today)) {
             for r in &w.refs {
-                let entry = latest.entry(r.as_str()).or_insert(w.date.as_str());
+                let entry = latest.entry(match_key(r)).or_insert(w.date.as_str());
                 if w.date.as_str() > *entry {
                     *entry = w.date.as_str();
                 }
             }
         }
-        for (name, tag) in &targets {
-            if !remaining_work.contains(name.as_str()) {
+        for (id, key) in &targets {
+            if !remaining_work.contains(*id) {
                 continue;
             }
-            let found = [latest.get(name.as_str()), latest.get(tag.as_str())]
-                .into_iter()
-                .flatten()
-                .max();
-            if let Some(found) = found {
-                let best = work.entry(name.clone()).or_insert_with(|| found.to_string());
+            if let Some(found) = latest.get(key.as_str()) {
+                let best = work
+                    .entry((*id).clone())
+                    .or_insert_with(|| found.to_string());
                 if *found > best.as_str() {
                     *best = found.to_string();
                 }
@@ -326,10 +301,10 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
             // 書かれていると、最初に見つかった日付が最大とは限らない。ファイルの日付が
             // 確定済みの最大実働日以下になった時点で、これ以上新しい実働日は出てこない
             if work
-                .get(name.as_str())
+                .get(*id)
                 .is_some_and(|best| date.as_str() <= best.as_str())
             {
-                remaining_work.remove(name.as_str());
+                remaining_work.remove(*id);
             }
         }
     }
@@ -575,21 +550,6 @@ fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn collect_note_files(note_dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    let Ok(entries) = fs::read_dir(note_dir) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files
-}
-
 /// 手を入れる必要が高い順に並べる。
 ///
 /// 1. 未反映（`!`）を最優先。作業は進んでいるのに taski が捉えられていない状態
@@ -605,7 +565,7 @@ fn sort_key(p: &PjProject) -> (u8, i64, u8, String) {
         PjHealth::Unclarified => 1,
         PjHealth::Ok => 2,
     };
-    (unreported_rank, log_rank, health_rank, p.name.clone())
+    (unreported_rank, log_rank, health_rank, p.name.as_str().to_string())
 }
 
 /// PJ を集める。git・journal の走査を含む。
@@ -615,27 +575,55 @@ struct Collected {
     fetch_failed: Vec<String>,
 }
 
+/// 照合キーが衝突している PJ を警告する（docs/domain.md §4）。
+///
+/// `在庫 管理.md` と `在庫_管理.md` が同居すると、`[[在庫 管理]]` がどちらを指すのか
+/// 決められない。現状は両方に同じ言及・実働が付くが、それは「黙って片方を採る」より
+/// 悪い。集計は続けたうえで、曖昧さを stderr に出して表面化させる。
+///
+/// stdout には出さない。`--format json` の出力を汚すと利用側のパースが壊れる。
+fn warn_on_match_key_collision(names: &[PjId]) {
+    let mut by_key: HashMap<String, Vec<&PjId>> = HashMap::new();
+    for id in names {
+        by_key.entry(id.match_key()).or_default().push(id);
+    }
+    let mut collisions: Vec<(String, Vec<&PjId>)> = by_key
+        .into_iter()
+        .filter(|(_, ids)| ids.len() > 1)
+        .collect();
+    collisions.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (key, ids) in collisions {
+        let listed: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
+        eprintln!(
+            "warning: 照合キー `{}` が {} PJ で重複しています: {}。\
+             journal の言及・実働がどちらにも付きます",
+            key,
+            listed.len(),
+            listed.join(", ")
+        );
+    }
+}
+
 fn collect_projects(
     base_dir: &Path,
     statuses: &[ProjectStatus],
     today: &str,
     fetch: bool,
 ) -> Collected {
-    let note_dir = base_dir.join("note");
     let updated_map = note_last_updated(base_dir, today);
 
     struct Pending {
-        name: String,
+        name: PjId,
         rel_path: String,
-        status: ProjectStatus,
+        state: ProjectState,
         repo: Option<String>,
-        completed: Option<String>,
         note: parser_core::pj::PjNote,
     }
 
     let mut pending: Vec<Pending> = Vec::new();
 
-    for path in collect_note_files(&note_dir) {
+    for path in note_files(base_dir) {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
@@ -643,16 +631,13 @@ fn collect_projects(
         let Some(fm) = parse_front_matter(&lines) else {
             continue;
         };
-        let Some(status) = fm.project else {
+        let Some(state) = fm.state else {
             continue;
         };
-        if !statuses.contains(&status) {
+        if !statuses.contains(&state.status()) {
             continue;
         }
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let name = PjId::from_path(&path);
         let rel_path = path
             .strip_prefix(base_dir)
             .unwrap_or(&path)
@@ -662,14 +647,14 @@ fn collect_projects(
         pending.push(Pending {
             name,
             rel_path,
-            status,
+            state,
             repo: fm.repo,
-            completed: fm.completed,
             note: parse_pj_note(&lines),
         });
     }
 
-    let names: Vec<String> = pending.iter().map(|p| p.name.clone()).collect();
+    let names: Vec<PjId> = pending.iter().map(|p| p.name.clone()).collect();
+    warn_on_match_key_collision(&names);
     let journal = journal_dates(base_dir, &names, today);
 
     // 1つのリポジトリを複数 PJ が共有することがあるので重複を潰してから fetch する
@@ -725,10 +710,10 @@ fn collect_projects(
             PjProject {
                 name: p.name,
                 path: p.rel_path,
-                status: status_label(p.status).to_string(),
+                status: status_label(p.state.status()).to_string(),
                 repo_abs: p.repo.as_deref().and_then(repo_abs_path),
                 repo: p.repo,
-                completed: p.completed,
+                completed: p.state.completed().map(str::to_string),
                 next_action: p.note.next_action,
                 next_action_body: p.note.next_action_body,
                 next_action_meta: p.note.next_action_meta,
@@ -1070,7 +1055,7 @@ mod tests {
 
     fn project(name: &str) -> PjProject {
         PjProject {
-            name: name.to_string(),
+            name: PjId::new(name),
             path: format!("note/{name}.md"),
             status: "active".to_string(),
             repo: None,
@@ -1257,9 +1242,9 @@ mod tests {
 
         let mut list = [a, b, c];
         list.sort_by_cached_key(sort_key);
-        assert_eq!(list[0].name, "C");
-        assert_eq!(list[1].name, "B");
-        assert_eq!(list[2].name, "A");
+        assert_eq!(list[0].name.as_str(), "C");
+        assert_eq!(list[1].name.as_str(), "B");
+        assert_eq!(list[2].name.as_str(), "A");
     }
 
     #[test]
@@ -1270,7 +1255,7 @@ mod tests {
 
         let mut list = [a, b];
         list.sort_by_cached_key(sort_key);
-        assert_eq!(list[0].name, "B");
+        assert_eq!(list[0].name.as_str(), "B");
     }
 
     #[test]
@@ -1284,7 +1269,7 @@ mod tests {
 
         let mut list = [a, b];
         list.sort_by_cached_key(sort_key);
-        assert_eq!(list[0].name, "B");
+        assert_eq!(list[0].name.as_str(), "B");
     }
 
     // --- display width ---

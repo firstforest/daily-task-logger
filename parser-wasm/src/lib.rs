@@ -42,10 +42,11 @@ pub fn extract_tags(text: &str) -> JsValue {
     serde_wasm_bindgen::to_value(&tags).unwrap()
 }
 
+/// タグ別ビュー用。導出（`extract_file_tags`）ではなく表示の方針を通したものを返す。
 #[wasm_bindgen(js_name = "extractFileTags")]
 pub fn extract_file_tags(lines_js: JsValue, file_name: &str) -> JsValue {
     let lines: Vec<String> = serde_wasm_bindgen::from_value(lines_js).unwrap_or_default();
-    let tags = parser_core::extract_file_tags(&lines, file_name);
+    let tags = parser_core::visible_file_tags(&lines, file_name);
     serde_wasm_bindgen::to_value(&tags).unwrap()
 }
 
@@ -65,7 +66,7 @@ pub fn normalize_wiki_name(raw: &str) -> JsValue {
 pub fn resolve_wiki_link(name: &str, candidate_paths: Vec<String>) -> Option<String> {
     let candidates: Vec<std::path::PathBuf> =
         candidate_paths.into_iter().map(std::path::PathBuf::from).collect();
-    parser_core::wiki_link::resolve_wiki_link(name, &candidates)
+    parser_core::wiki_link::resolve(name, &candidates)
         .map(|p| p.to_string_lossy().to_string())
 }
 

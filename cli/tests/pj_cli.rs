@@ -825,6 +825,80 @@ fn test_journal_work_is_separate_from_mention() {
     assert_eq!(mentioned["journal_work_days"], serde_json::Value::Null);
 }
 
+/// PJ ノートを `note/` 直下だけでなく `note/**` から拾うこと（docs/design.md G-6）。
+///
+/// 走査範囲が非対称だったころは `note/sub/名前.md` が「Wiki リンクとしては開けるが
+/// PJ としては拾われない」状態だった。
+#[test]
+fn test_pj_notes_are_found_in_subdirectories() {
+    let home = TempHome::new("note-subdir");
+    let root = home.path();
+
+    let body = "---\nproject: active\n---\n# n\n\n## 次の予定\n\n- [ ] やる（30分・@PC）\n";
+    write_note(root, "直下PJ", body);
+
+    let sub = root.join("taski").join("note").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("配下PJ.md"), body).unwrap();
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let names: Vec<&str> = json["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+
+    assert!(names.contains(&"直下PJ"));
+    assert!(names.contains(&"配下PJ"), "note/ 配下のサブディレクトリも拾うこと");
+    // path は taski home からの相対パスで出る
+    assert_eq!(find(&json, "配下PJ")["path"], "note/sub/配下PJ.md");
+}
+
+/// 照合キー（空白 → `_`）を参照側と PJ 名側の両方に掛けること（docs/domain.md §4）。
+///
+/// `#タグ` に空白を書けない以上、突き合わせはキーを経由するしかない。片側だけに
+/// 掛けていると、ノート名に `_` を使った PJ が `[[名前 空白あり]]` で引けない。
+#[test]
+fn test_match_key_is_applied_to_both_sides() {
+    let home = TempHome::new("match-key");
+    let root = home.path();
+
+    write_note(
+        root,
+        "在庫 管理",
+        "---\nproject: active\n---\n# 在庫 管理\n\n## 次の予定\n\n- [ ] やる（30分・@PC）\n",
+    );
+    write_note(
+        root,
+        "発注_フロー",
+        "---\nproject: active\n---\n# 発注_フロー\n\n## 次の予定\n\n- [ ] やる（30分・@PC）\n",
+    );
+
+    // 空白入りのノートをタグ表記で、`_` 入りのノートを空白表記の Wiki リンクで参照する
+    write_journal(
+        root,
+        "2026-07-20",
+        "# 2026-07-20\n\n- [x] #在庫_管理 の棚卸し\n- [x] [[発注 フロー]] を直した\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+
+    let stock = find(&json, "在庫 管理");
+    assert_eq!(stock["journal_last"], "2026-07-20");
+    assert_eq!(
+        stock["journal_work_last"], "2026-07-20",
+        "空白入りの PJ 名は `#タグ` 表記でも当たること"
+    );
+
+    let order = find(&json, "発注_フロー");
+    assert_eq!(order["journal_last"], "2026-07-20");
+    assert_eq!(
+        order["journal_work_last"], "2026-07-20",
+        "`_` 入りの PJ 名は `[[名前]]` の空白表記でも当たること"
+    );
+}
+
 /// 実働日は「新しい journal で最初に見つかった日」ではなく最大値を採ること。
 ///
 /// 時刻付きログは自分の日付を持つので、新しい journal に前日ぶんの作業を
