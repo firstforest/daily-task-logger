@@ -825,6 +825,106 @@ fn test_journal_work_is_separate_from_mention() {
     assert_eq!(mentioned["journal_work_days"], serde_json::Value::Null);
 }
 
+/// 実働日は「新しい journal で最初に見つかった日」ではなく最大値を採ること。
+///
+/// 時刻付きログは自分の日付を持つので、新しい journal に前日ぶんの作業を
+/// 書き足すと、降順走査で最初に当たる日付が最大とは限らない。
+#[test]
+fn test_journal_work_takes_max_not_first_hit() {
+    let home = TempHome::new("journal-work-max");
+    let root = home.path();
+
+    write_note(
+        root,
+        "遡及PJ",
+        "---\nproject: active\n---\n# 遡及PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+
+    // 新しい journal には「前に少しやった分」の記録だけ（日付は 07-25）
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n- [ ] [[遡及PJ]] の続き\n    - 2026-07-25 10:00: 前に少しやった分を記録\n",
+    );
+    // 実際に最後に手が動いたのは 07-28
+    write_journal(
+        root,
+        "2026-07-28",
+        "# 2026-07-28\n\n- [x] [[遡及PJ]] のカードを作った\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "遡及PJ");
+    assert_eq!(p["journal_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_work_last"], "2026-07-28",
+        "古い journal にある新しい実働日を取り逃してはいけない"
+    );
+    assert_eq!(p["journal_work_days"], 4);
+}
+
+/// 言及と実働で参照の拾い方が揃っていること。
+///
+/// 実働は言及の部分集合なので、「実働はあるのに言及が null」は成り立たない。
+#[test]
+fn test_journal_mention_matches_work_link_normalization() {
+    let home = TempHome::new("journal-link-norm");
+    let root = home.path();
+
+    write_note(
+        root,
+        "正規化PJ",
+        "---\nproject: active\n---\n# 正規化PJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    // `.md` 付きのリンク。実働側は正規化して拾うので言及側も拾えなければならない
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n- [x] [[正規化PJ.md]] のカードを作った\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "正規化PJ");
+    assert_eq!(p["journal_work_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_last"], "2026-07-30",
+        "実働があるのに言及が null になってはいけない"
+    );
+}
+
+/// 候補に並べた PJ が、別セクションの無関係な時刻メモで実働扱いにならないこと。
+#[test]
+fn test_candidate_list_is_not_work_despite_timed_note() {
+    let home = TempHome::new("journal-candidate");
+    let root = home.path();
+
+    write_note(
+        root,
+        "候補だけPJ",
+        "---\nproject: active\n---\n# 候補だけPJ\n\n## 次の予定\n\n- [ ] やる（30分・軽・@PC）\n",
+    );
+    // 「今日の候補」＋別セクションの時刻メモ、という journal の普通の形
+    write_journal(
+        root,
+        "2026-07-30",
+        "# 2026-07-30\n\n\
+         ## 今日の候補\n\n\
+         - [ ] [[候補だけPJ]] を始める\n\n\
+         ## 記録\n\n\
+         - 定例ミーティング\n\
+         \x20   - 2026-07-30 10:00-11:00: 進捗共有\n",
+    );
+
+    let json = run_pj(root, &["--format", "json", "--today", "2026-08-01"]);
+    let p = find(&json, "候補だけPJ");
+    assert_eq!(p["journal_last"], "2026-07-30");
+    assert_eq!(
+        p["journal_work_last"],
+        serde_json::Value::Null,
+        "別セクションの時刻メモを実働と取り違えてはいけない"
+    );
+}
+
 /// `repo:` の展開済み絶対パスを出すこと（利用側に `~` 展開を再実装させない）。
 #[test]
 fn test_repo_abs_is_expanded() {

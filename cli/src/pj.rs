@@ -15,9 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
-use parser_core::pj::{journal_work, parse_pj_note, PjHealth, PjLogEntry};
+use parser_core::pj::{collect_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
 use parser_core::{parse_front_matter, ProjectStatus};
-use regex::Regex;
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -254,14 +253,13 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
         return JournalDates { mention, work };
     }
 
-    let tag_re = Regex::new(r"#([^\s#]+)").unwrap();
-    // PJ 名 → (`[[名前]]` の検索文字列, ファイル単位タグ)
-    let targets: Vec<(String, String, String)> = names
+    // PJ 名 → ファイル単位タグ（`#タグ` は空白を書けないので `_` 区切り）
+    let targets: Vec<(String, String)> = names
         .iter()
-        .map(|name| (name.clone(), format!("[[{name}]]"), name.replace(' ', "_")))
+        .map(|name| (name.clone(), name.replace(' ', "_")))
         .collect();
 
-    let mut remaining_mention: HashSet<&str> = targets.iter().map(|(n, _, _)| n.as_str()).collect();
+    let mut remaining_mention: HashSet<&str> = targets.iter().map(|(n, _)| n.as_str()).collect();
     let mut remaining_work: HashSet<&str> = remaining_mention.clone();
 
     for (date, path) in journal_files_desc(base_dir) {
@@ -276,16 +274,16 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
         };
 
         if !remaining_mention.is_empty() {
-            let tags: HashSet<&str> = tag_re
-                .captures_iter(&content)
-                .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
-                .collect();
+            // 参照の拾い方は実働側（`journal_work`）と同じ `collect_refs` に揃える。
+            // 片方だけが `[[名前.md]]` を拾うと「実働はあるのに言及が null」という
+            // 成り立たない組み合わせが出る（実働は言及の部分集合）
+            let refs: HashSet<String> = collect_refs(&content).into_iter().collect();
 
-            for (name, link, tag) in &targets {
+            for (name, tag) in &targets {
                 if !remaining_mention.contains(name.as_str()) {
                     continue;
                 }
-                if content.contains(link) || tags.contains(tag.as_str()) {
+                if refs.contains(name.as_str()) || refs.contains(tag.as_str()) {
                     mention.insert(name.clone(), date.clone());
                     remaining_mention.remove(name.as_str());
                 }
@@ -308,7 +306,7 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
                 }
             }
         }
-        for (name, _, tag) in &targets {
+        for (name, tag) in &targets {
             if !remaining_work.contains(name.as_str()) {
                 continue;
             }
@@ -317,7 +315,19 @@ fn journal_dates(base_dir: &Path, names: &[String], today: &str) -> JournalDates
                 .flatten()
                 .max();
             if let Some(found) = found {
-                work.insert(name.clone(), found.to_string());
+                let best = work.entry(name.clone()).or_insert_with(|| found.to_string());
+                if *found > best.as_str() {
+                    *best = found.to_string();
+                }
+            }
+            // 言及と違い、実働は「見つけたら打ち切り」にできない。時刻付きログは
+            // 自分の日付を持つので、新しい journal に古い日付のログ（前日ぶんの記録など）が
+            // 書かれていると、最初に見つかった日付が最大とは限らない。ファイルの日付が
+            // 確定済みの最大実働日以下になった時点で、これ以上新しい実働日は出てこない
+            if work
+                .get(name.as_str())
+                .is_some_and(|best| date.as_str() <= best.as_str())
+            {
                 remaining_work.remove(name.as_str());
             }
         }
