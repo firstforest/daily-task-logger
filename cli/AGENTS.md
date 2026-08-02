@@ -93,7 +93,9 @@ taski list --tag work --format json
         "tasks": [
           {
             "status": "incomplete",
-            "text": "タスク名 #tag",
+            "text": "タスク名 #tag（30分・軽・@PC）",
+            "body": "タスク名 #tag",
+            "meta": "30分・軽・@PC",
             "fileUri": "/Users/user/taski/journal/2026/04/2026-04-11.md",
             "line": 3,
             "log": "ログ内容",
@@ -106,6 +108,8 @@ taski list --tag work --format json
   }
 ]
 ```
+
+`tasks[]` の `body` / `meta` は、行末の判断メタデータ（`（30分・軽・@PC）`）を分離したもの。`text` は原文のまま。メタデータが無ければ `body` は `text` と同じで `meta` は `null` になる。判定ルールは `taski pj` の `next_action_meta` と同一で、括弧の中身を `・,、` で分割していずれかの要素が所要時間（`45分` / `2時間`）・重さ（`軽` / `重`）・コンテキスト（`@PC` など）・締切（`08-15` / `締切08-15`）に一致する場合だけメタデータと見なす。単なる注記（`（仮）`）や列挙（`（髪・服・顔）`）は通さない。**自前で切り出し直さずこのフィールドを使うこと。**
 
 ### `taski schedule`
 
@@ -291,7 +295,7 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
 
 基準日より後のログ・コミット・journal 言及・ノート更新は「その時点ではまだ無い」ものとして集計から除外する。`log_last` などは基準日以前の最新を採り、無ければ `null` になる。経過日数が負になることはない。先の日付を書いたログや翌日ぶんの journal も同じ扱いなので、基準日を省略した通常運用でも負にならない。
 
-**巻き戻るのは日付由来のフィールドだけ。** `log_last` / `repo_last` / `journal_last` / `updated` とそれぞれの日数、および `logs` が対象。`next_action` / `health` / `backlog` / `status` / `completed` は **ノートの現在の内容がそのまま出る**（過去のノート内容は git から復元しない）。過去日を渡しても「その日時点のスナップショット」にはならないので、`--status` の絞り込みも現在の `project:` の値で効く。
+**巻き戻るのは日付由来のフィールドだけ。** `log_last` / `repo_last` / `journal_last` / `journal_work_last` / `updated` とそれぞれの日数、`ahead_count`、および `logs` が対象。`has_remote` は remote の現在の設定がそのまま出る。`next_action` / `health` / `backlog` / `status` / `completed` は **ノートの現在の内容がそのまま出る**（過去のノート内容は git から復元しない）。過去日を渡しても「その日時点のスナップショット」にはならないので、`--status` の絞り込みも現在の `project:` の値で効く。
 
 **JSON出力の構造:**
 
@@ -306,6 +310,7 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
       "path": "note/漫画制作エディタ.md",
       "status": "active",
       "repo": "~/workspace/manga-editor",
+      "repo_abs": "/Users/user/workspace/manga-editor",
       "completed": null,
       "next_action": "エクスポート処理を書く（45分・重・@PC）",
       "next_action_body": "エクスポート処理を書く",
@@ -320,8 +325,12 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
       "repo_days": 1,
       "unreported": true,
       "unreported_count": 3,
+      "has_remote": true,
+      "ahead_count": 2,
       "journal_last": "2026-07-29",
       "journal_days": 3,
+      "journal_work_last": "2026-07-28",
+      "journal_work_days": 4,
       "backlog_count": 2,
       "backlog": ["ページ管理を整理する", "書き出し設定を保存する"],
       "logs": [
@@ -343,6 +352,7 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
 - `path` — `$HOME/taski` からの相対パス
 - `status` — `active` / `someday` / `done`
 - `repo` — front matter の `repo:`（未設定なら `null`）
+- `repo_abs` — `repo:` を `~` 展開・シンボリックリンク解決した絶対パス。ディレクトリが存在しなければ `null`。セッションの `cwd` などと突き合わせるときは自前で展開せずこちらを使う
 - `completed` — 完了日（`done` のときのみ。未設定なら `null`）
 - `next_action` — `## 次の予定` の最初の `- [ ]` 行（メタデータ込みの原文）
 - `next_action_body` / `next_action_meta` — 本文と判断メタデータ（`45分・重・@PC`）に分離したもの
@@ -352,15 +362,24 @@ fetch に失敗しても集計は続行し、失敗したリポジトリを `fet
 - `log_last` / `log_days` — `## ログ` の最新日付と経過日数
 - `repo_last` / `repo_days` — `repo:` のリポジトリの最終コミット日と経過日数
 - `unreported` / `unreported_count` — `repo_last > log_last` のとき `true`。作業は進んでいるのにログに反映されていない状態と、その未反映コミット数
-- `journal_last` / `journal_days` — journal で `[[PJ名]]` / `#PJ名` により最後に言及された日と経過日数
+- `has_remote` — `repo:` のリポジトリに remote が設定されているか。`false` なら**リモートにバックアップが無い**。`repo:` が無い / パスが存在しない / git リポジトリでないときは `null`
+- `ahead_count` — remote に push されていないコミット数（ローカルの全ブランチから辿れて remote から辿れないもの）。remote が無ければ `null`。ブランチごとの upstream 設定には依存しないので、upstream 未設定の作業ブランチも数える
+- `journal_last` / `journal_days` — journal で `[[PJ名]]` / `#PJ名` により最後に**言及**された日と経過日数。`## 今日の候補` に載っただけ・文中で触れられただけでも動く
+- `journal_work_last` / `journal_work_days` — journal で最後に**実働**があった日と経過日数。参照を持つタスク行が `- [x]` になった日、またはそのタスクが時刻付きログ（`- YYYY-MM-DD HH:MM: ...`）を持つ日
 - `backlog_count` / `backlog` — `## オープンタスク` の項目
 - `logs` — 直近のログ（最大3件、新しい順）。再開時のコンテキストとして使う
 
 日付が取れない場合（ログが1件も無い、`repo:` のパスが存在しない等）は該当フィールドが `null` になる。停滞（`stale_days` / `log_days`）と言及（`journal_days`）は別々に持つ。合成すると「候補に載っただけで停滞0日」になり実態が見えなくなるため。
 
-**table の並び順:**
+**言及と実働は別物。** 未反映検出のように「本当に手が動いたか」を見たい判定では `journal_last` ではなく `journal_work_last` を使う。`journal_last` は候補に挙げただけでも更新されるので、note で完結する PJ が毎回「動いている」と誤判定される。
 
-手を入れる必要が高い順（未反映 → ログが古い/無い → `no-next` → `unclarified`）。未反映の PJ は行頭に `!` が付く。
+**table の並び順と印:**
+
+手を入れる必要が高い順（未反映 → ログが古い/無い → `no-next` → `unclarified`）。PJ 名の前には固定幅2文字の印が付く。
+
+- `!` — 未反映（repo にコミットがあるのに PJ ノートのログに無い）
+- `L` — remote 未設定（リモートにバックアップが無い）
+- `^` — 未 push コミットあり
 
 ## 終了コード
 
