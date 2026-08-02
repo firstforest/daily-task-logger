@@ -331,14 +331,23 @@ pub struct JournalWork {
     pub refs: Vec<String>,
 }
 
-/// タスク行が参照している名前を集める。`[[名前]]` と `#タグ` の両方を拾う。
-fn task_refs(text: &str) -> Vec<String> {
+/// テキストが参照している名前を集める。`[[名前]]`（`.md` を落とした正規化名）と `#タグ`。
+///
+/// 言及（journal 全文）と実働（タスク行）で同じ関数を使うために公開する。片方だけが
+/// `[[名前.md]]` のような表記を拾うと、実働はあるのに言及が `null` という
+/// 成り立たない組み合わせが出る（実働は言及の部分集合でなければならない）。
+pub fn collect_refs(text: &str) -> Vec<String> {
     let mut refs: Vec<String> = crate::wiki_link::parse_wiki_links(text)
         .into_iter()
         .map(|m| crate::wiki_link::normalize_wiki_name(&m.name).name)
         .collect();
     refs.extend(crate::extract_tags(text));
     refs
+}
+
+/// 行頭の空白幅。タスク行・ログ行の `^(\s*)` キャプチャと同じ数え方に揃える。
+fn indent_width(line: &str) -> usize {
+    line.len() - line.trim_start().len()
 }
 
 /// journal 1日分の本文から「実働」を取り出す。
@@ -351,13 +360,18 @@ fn task_refs(text: &str) -> Vec<String> {
 ///
 /// 時刻の無いログ（`- YYYY-MM-DD: ...`）は実働と見なさない。journal では
 /// 「やった記録」ではなく予定・メモとしても書かれるため。
+///
+/// 時刻付きログは**そのタスクの配下**（より深いインデント）にあるものだけを見る。
+/// 見出し・兄弟の箇条書き・段落が挟まった時点でタスクの文脈を閉じるので、
+/// `## 今日の候補` に PJ を並べた後、別セクションに無関係な時刻メモを書いても
+/// 実働にはならない。ここを緩めると「候補に載せただけ」が実働に化ける。
 pub fn journal_work(lines: &[String], file_date: &str) -> Vec<JournalWork> {
     let task = indented_task_re();
     let timed = timed_log_re();
     let fence = fence_re();
 
     let mut result: Vec<JournalWork> = Vec::new();
-    // 参照を持つタスク行の (インデント, 参照名)。参照を持たないタスク行が来たら閉じる
+    // 参照を持つタスク行の (インデント, 参照名)。配下でない行が来たら閉じる
     let mut current: Option<(usize, Vec<String>)> = None;
     let mut in_code_block = false;
 
@@ -371,7 +385,7 @@ pub fn journal_work(lines: &[String], file_date: &str) -> Vec<JournalWork> {
         }
 
         if let Some(caps) = task.captures(line) {
-            let refs = task_refs(&caps[3]);
+            let refs = collect_refs(&caps[3]);
             if refs.is_empty() {
                 current = None;
                 continue;
@@ -386,16 +400,23 @@ pub fn journal_work(lines: &[String], file_date: &str) -> Vec<JournalWork> {
             continue;
         }
 
-        if let Some((indent, refs)) = current.as_ref() {
-            if let Some(caps) = timed.captures(line) {
-                // ログ行はタスク行より深いインデントであることを必須にする
-                if caps[1].len() > *indent {
-                    result.push(JournalWork {
-                        date: caps[2].to_string(),
-                        refs: refs.clone(),
-                    });
-                }
+        let Some((indent, refs)) = current.as_ref() else {
+            continue;
+        };
+        // ログ行はタスク行より深いインデントであることを必須にする
+        if let Some(caps) = timed.captures(line) {
+            if caps[1].len() > *indent {
+                result.push(JournalWork {
+                    date: caps[2].to_string(),
+                    refs: refs.clone(),
+                });
+                continue;
             }
+        }
+        // タスクの配下でない行（見出し・兄弟の箇条書き・段落）が来たら文脈を閉じる。
+        // 空行だけでは閉じない。ログの間に空行を挟む書き方を落とさないため
+        if !line.trim().is_empty() && indent_width(line) <= *indent {
+            current = None;
         }
     }
 
@@ -850,5 +871,59 @@ mod tests {
         let l = lines(&["- [x] [[永夜.md]] を進めた"]);
         let works = journal_work(&l, "2026-08-01");
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+    }
+
+    #[test]
+    fn test_journal_work_context_closes_at_heading() {
+        // 候補に並べたあと別セクションに時刻メモを書くのは普通の journal の形。
+        // 見出しで文脈が閉じないと、候補に載せただけの PJ が実働に化ける
+        let l = lines(&[
+            "# 2026-08-01",
+            "## 今日の候補",
+            "- [ ] [[在庫管理]] を始める",
+            "",
+            "## 記録",
+            "",
+            "- 定例ミーティング",
+            "    - 2026-08-01 10:00-11:00: 進捗共有",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_context_closes_at_sibling_bullet() {
+        // 兄弟の箇条書き配下のログは、その上のタスクのものではない
+        let l = lines(&[
+            "- [ ] [[在庫管理]] を進める",
+            "- 打ち合わせメモ",
+            "    - 2026-08-01 14:00: 別件",
+        ]);
+        assert!(journal_work(&l, "2026-08-01").is_empty());
+    }
+
+    #[test]
+    fn test_journal_work_survives_blank_line_and_nested_bullet() {
+        // 空行やタスク配下のメモを挟んでもそのタスクのログは拾う
+        let l = lines(&[
+            "- [ ] [[永夜]] を進める",
+            "    - メモ: 下書きから",
+            "",
+            "    - 2026-08-01 10:00: 着手",
+        ]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
+    }
+
+    #[test]
+    fn test_journal_work_nested_task_keeps_own_context() {
+        // 入れ子のタスクは自分のインデントで文脈を持つ
+        let l = lines(&[
+            "- [ ] [[親PJ]] を進める",
+            "    - [ ] [[子PJ]] の下ごしらえ",
+            "        - 2026-08-01 10:00: 子だけ着手",
+        ]);
+        let works = journal_work(&l, "2026-08-01");
+        assert_eq!(work_dates(&works, "子PJ"), ["2026-08-01"]);
+        assert!(work_dates(&works, "親PJ").is_empty());
     }
 }
