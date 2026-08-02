@@ -58,7 +58,9 @@ domain.md の語と、現状の Rust 表現の対応表である。`Rust 表現`
 | `PjId` | PJ の正規名 = ノートのファイル名。domain.md §4 の目標であり、現状は型として存在しない（G-2） | （なし） |
 | `Line` | 行番号。**`parser-core` は 0 始まり**、CLI の `toggle` 引数は 1 始まり | `usize` |
 
-`Indent` の数え方は 2 箇所（正規表現の `^(\s*)` のキャプチャ長と `pj::indent_width`）で独立に実装されているため、**両者が同じ数え方であることが不変条件**である（`indent_width` は `line.len() - line.trim_start().len()` でバイト数を返す）。片方を文字数に変えるとタブ混在時に帰属判定がずれる。
+`Indent` の数え方は 2 箇所（正規表現の `^([ \t]*)` のキャプチャ長と `pj::indent_width`）で独立に実装されているため、**両者が同じ数え方であることが不変条件**である（`indent_width` は `line.len() - line.trim_start_matches([' ', '\t']).len()` でバイト数を返す）。片方を文字数に変えるとタブ混在時に帰属判定がずれる。
+
+**行の構造を区切る空白は `\s` ではなく `[ \t]` で書く。** `regex` クレートの `\s` は Unicode 空白に一致するので、`\s` のままだと全角スペース（U+3000、3 バイト）で字下げした行がタスク・ログとして通り、しかも `trim_start` と `^(\s*)` の双方が 3 を返すぶん帰属の計算にも混ざる。記法上の空白は半角スペースとタブだけである（syntax.md §3）。
 
 ## 3. 表層構文の実装
 
@@ -231,11 +233,13 @@ struct TreeDateGroup { date_key: String, label: String, is_today: bool,
 
 ```
 TreeDateGroup ≅ Today { 全ステータス, 進捗カウンタ }
-              | Past(Date) { 未完了のみ, カウンタ 0 }
+              | Dated(Date) { 未完了のみ, カウンタ 0 }
               | Undated     { 未完了のみ, カウンタ 0 }
 ```
 
-判別は `(is_today, date_key.is_empty())` の組で行う。出力順は **Today → Past（日付降順）→ Undated** で固定する。
+判別は `(is_today, date_key.is_empty())` の組で行う。出力順は **Today → Dated（日付降順）→ Undated** で固定する。
+
+`Dated` は「今日以外」であって「過去」ではない。**未来日のログを持つタスクもここに落ちる**（明日の予定を先に書いた場合など）。降順なので未来日のグループは Today の直後に並ぶ。基準日より後を落とすのは `cli::pj` の観測（I-16）だけで、ツリーは日付を選り好みしない。
 
 ```rust
 struct ScheduleEntry {
@@ -408,8 +412,11 @@ struct JournalWork    { date: String, refs: Vec<String> }
 参照の抽出は 1 本に統一する（P4）。
 
 ```
-collect_refs(t) = { normalize(m.name) | m ∈ parse_wiki_links(t) } ∪ extract_tags(t)
+collect_refs(t)          = { normalize(m.name) | m ∈ parse_wiki_links(t) } ∪ extract_tags(t)
+collect_document_refs(L) = ⋃ { collect_refs(l) | l ∈ L, l はフェンス外 }
 ```
+
+言及（`journal_last`）は `collect_document_refs` を、実働は `collect_refs` をタスク行の本文に適用する。**両者の差は適用する対象だけで、抽出そのものは同じ関数**である（domain.md §5）。文書全体を 1 つの文字列として `collect_refs` に渡さないのは、フェンス内を除外できないからで、記法の例をコードブロックに書いただけの `[[名前]]` を言及にしないためである（syntax.md §2.3）。実働側もフェンスを飛ばして走査するので、`collect_document_refs` が拾う行はタスク行を含み、I-17 の包含が保たれる。
 
 実働の定義は次の述語である。ジャーナル 1 日分の行列 `L` とそのファイル日付 `d₀` に対し、
 
@@ -652,7 +659,7 @@ classDiagram
 
 - **I-16** 観測由来の日付は基準日を越えない: `updated` / `log_last` / `repo_last` / `journal_last` / `journal_work_last` と `logs` の各要素、および `ahead_count` の母数は、`≤ today` のものだけから作る。したがって対応する `*_days` はすべて `≥ 0`。
   **巻き戻るのはこの観測由来のフィールドだけ**であり、`next_action` / `health` / `backlog` / `status` / `completed` はノートの現在の内容をそのまま出す（過去のノート内容を git から復元することはしない）。front matter の `completed:` が `today` より後になることは構文上ありうる。`--today` を渡した出力は「その日時点のスナップショット」ではない。
-- **I-17** 実働は言及の部分集合: `journal_work_last.is_some() ⟹ journal_last.is_some()`。両者は同じ `collect_refs` を使うため成立する。domain.md §5 の導出形ではこれは定理になり、不変条件として書く必要がなくなる（G-4）。日付についても、実働を検出したジャーナルファイルは同じ参照を含むので `journal_last ≥ (その実働のファイル日付)`（例外は W-5）。
+- **I-17** 実働は言及の部分集合: `journal_work_last.is_some() ⟹ journal_last.is_some()`。両者は同じ `collect_refs` を、同じくフェンスを除外した行に適用するため成立する（§5.5）。domain.md §5 の導出形ではこれは定理になり、不変条件として書く必要がなくなる（G-4）。日付についても、実働を検出したジャーナルファイルは同じ参照を含むので `journal_last ≥ (その実働のファイル日付)`（例外は W-5）。
 - **I-18** 未反映の整合: `unreported ⟺ unreported_count > 0`。かつ
 
   ```
@@ -686,6 +693,7 @@ classDiagram
 | `pj::split_decision_meta` | `&str -> Option<(String, String)>` | §5.4 の述語 |
 | `pj::parse_pj_note` | `&[String] -> PjNote` | I-11〜I-15 |
 | `pj::collect_refs` | `&str -> Vec<String>` | 言及・実働で共有（P4） |
+| `pj::collect_document_refs` | `&[String] -> Vec<String>` | フェンス外の各行に `collect_refs`。言及の材料 |
 | `pj::journal_work` | `(&[String], &str) -> Vec<JournalWork>` | 強い帰属（§4） |
 | `wiki_link::parse_wiki_links` | `&str -> Vec<WikiLinkMatch>` | 表示名付き（`[[名前 \| 表示]]`）は対象外 |
 | `wiki_link::normalize_wiki_name` | `&str -> NormalizedName` | trim + `.md` 除去 + 日付判定 |
