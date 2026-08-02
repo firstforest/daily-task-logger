@@ -79,7 +79,14 @@ domain.md の語と、現状の Rust 表現の対応表である。`Rust 表現`
 - **時刻をキャプチャするのは `parse_schedule_internal` だけである。** 他の経路（`parse_tasks_internal` / `parse_all_dates_internal` / `pj::extract_logs`）は時刻部を非キャプチャで読み飛ばし、日付だけを取る（G-7）。
 - `time_memo` の発火にはファイル内の日付見出し（`^#\s+(date)`）との一致が要る。日付見出しは走査中の文脈であって `Document.date` ではない（domain.md §1）。
 
-**同じ文法の正規表現が複数箇所に独立して定義されている。** `lib.rs` に 3 組（`parse_tasks_internal` / `parse_all_dates_internal` / `parse_schedule_internal` がそれぞれローカルに構築）、`pj.rs` に 1 組（`OnceLock` で共有）、加えて実働判定用の `timed_log_re` がある。記法を変えるときは syntax.md を直したうえで、これらすべてを揃える必要がある（G-7）。
+**同じ文法の正規表現が複数箇所に独立して定義されている。** タスク行が 5 本、ログ行が 5 本ある。
+
+| 文法 | `lib.rs`（呼び出しのたびにローカルに構築） | `pj.rs`（`OnceLock` で共有） |
+| --- | --- | --- |
+| タスク行 | `parse_tasks_internal` / `parse_all_dates_internal` / `parse_schedule_internal` に 1 本ずつ | `task_re` / `indented_task_re`（パターンは同一で、インデントを捕捉するかどうかだけが違う） |
+| ログ行 | 同じ 3 関数に 1 本ずつ（時刻部をキャプチャするのは `parse_schedule_internal` だけ） | `log_re` / `timed_log_re`（後者だけが時刻部を必須にした狭い文法） |
+
+記法を変えるときは syntax.md を直したうえで、これらすべてを揃える必要がある（G-7）。
 
 ## 4. 走査のセマンティクス（タスク文脈）
 
