@@ -42,7 +42,7 @@ git の呼び出し・ディレクトリ走査・並列 fetch・現在日付の�
 
 ### 2.1 エンティティ
 
-ドメインは 3 つの実体からなる。
+ドメインは 3 つの実体（`Document` / `Task` / `Log`）と、それらを結ぶ参照 `Ref` からなる。
 
 ```
 Document                          -- md ファイル 1 つ。一次情報はすべてここにある
@@ -52,11 +52,15 @@ Document                          -- md ファイル 1 つ。一次情報はす�
   └ lines : [Line]
 
 Task                              -- Document 内のチェックボックス行
-  ├ at       : (Document, Line)   -- 同一性
-  ├ status   : Todo | Done | Cancelled
-  ├ text     : String
-  ├ logs     : [Log]
-  └ projects : Set<PjId>          -- §2.3
+  ├ at     : (Document, Line)     -- 同一性。どの Document に収容されているかを含む
+  ├ status : Todo | Done | Cancelled
+  ├ text   : String
+  ├ logs   : [Log]
+  └ refs   : Set<Ref>             -- 参照。§2.3。Task は Project を知らない
+
+Ref                               -- 文中に書かれた参照
+  = WikiName(String)              -- [[名前]]
+  | Tag(String)                   -- #タグ
 
 Log                               -- Task に帰属する日付付きの記録
   ├ at   : (Document, Line)
@@ -106,27 +110,45 @@ Observation(pj) = ジャーナル由来（§2.5）∪ git 由来 ∪ ファイ�
 
 **定義と観測の分離は P3（事実と判断を分ける）の 1 つ下の層にある規律である。** 定義はノートを書き換えれば変わる。観測は世界を見に行かないと変わらない。両者を 1 つの構造体に平坦化するのは出力の都合であって、概念としては別に扱う。
 
-### 2.3 帰属 — Task が Project に属するとは
+### 2.3 関係の層 — Task は Project を知らない
 
-Task から Project への帰属は 1 つの関数で定義する。
+**「Task が PJ に属する」は基本関係ではない。** Task が直接持つ関係は 2 つだけで、Project に届くのはそこから 2 段先である。
+
+| 層 | 関係 | 意味 | 現状の実装 |
+| --- | --- | --- | --- |
+| 1 | Task → Document | **収容**。どの文書に書かれているか。`task.at` の一部であり、独立した関係ではなく同一性そのもの | `FileInput.file_uri` + `line` |
+| 2 | Task → Ref | **参照**。行から `[[名前]]` / `#タグ` を抽出する | `pj::collect_refs` |
+| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve_wiki_link` |
+| 4 | Document → Project | **役割**。`front.project` を持つか（§2.2） | `parse_front_matter` |
+
+PJ 軸はこの合成として導出する。
 
 ```
-projects(task) : Set<PjId>
-  = refs(task.text)                                 -- 参照
-  ∪ { id(doc) | doc = task.at.0, doc ∈ Project }    -- 収容
+docs(task)     = { task.at.0 } ∪ { d | r ∈ task.refs, resolve(r) = Some(d) }   -- 層 1・2・3
+projects(task) = { d ∈ docs(task) | d ∈ Project }                              -- 層 4
 ```
 
-- **収容**: Project ノートに書かれた Task はその Project に属する。**`status` に依存しない。**「どの PJ か」は事実、「表示するか」は判断であり、後者はビュー側（タグ別ビュー・`list --tag`）の責務とする。
-- **参照**: Task 行が `[[名前]]` / `#タグ` を含めばその Project に属する。Document の種類に依存しない。
-- 両者の**和集合**。1 つの Task が複数の Project に属してよい（N:M）。
+1 つの Task が複数の Project に属してよい（N:M）。
 
-`## 次の予定` の特別扱いは帰属ではない。**Project ノート内での役割**であり、帰属とは直交する軸である。
+**層を分ける理由は、PJ を経由しないビューが実在するからである。** タグ別ビューは層 1・2 だけで成立する。
+
+```
+tags(task) = { r ∈ task.refs | r は Tag } ∪ { name(task.at.0) }
+```
+
+これは `extract_tags` と `extract_file_tags` の合成そのもので、Project の概念を一切要求しない。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**（実際に分裂しているのは層 3 だけ — §11 G-5）
+
+**層をまたいだ依存を持ち込まない。** 現状の `extract_file_tags` は層 1 のタグ導出でありながら `project: active` を条件にしており、層 4 の情報を見ている。「どの PJ か」（事実）に「表示するか」（判断）が混入した形である。タグ導出は層 1・2 で完結させ、`status` による絞り込みは表示側の責務とする（§11 G-1）。
+
+`## 次の予定` の特別扱いも関係ではない。**Project ノート内での役割**であり、層とは直交する軸である。
 
 ```
 next_action(pj) = 「## 次の予定」セクションにある最初の未完了 Task
 ```
 
 つまり `next_action` は Task であって文字列ではない。位置を持つので、そこへ飛べる（現状は持っていない — §11 G-3）。
+
+なお本ドキュメントで**「帰属」と呼ぶのは Log と Task の関係（§5）だけ**である。Task と Project の間にあるのは上の 4 層とその合成であって、帰属ではない。
 
 ### 2.4 同一性 — PjId と参照の解決
 
@@ -160,9 +182,10 @@ Wiki リンクを開く時と PJ を照合する時で、同じ `resolve` を通
 
 ```
 Journals = { d ∈ Document | d.date ≠ None }
+hits(pj, R) = ∃ r ∈ R. match_key(id(pj)) = match_key(text(r))     -- §2.4
 
-mention(pj) = max { d.date | d ∈ Journals, pj ∈ refs(d の全文) }
-work(pj)    = max { w      | d ∈ Journals, t ∈ Tasks(d), pj ∈ projects(t), w ∈ worked(t) }
+mention(pj) = max { d.date | d ∈ Journals, hits(pj, refs(d の全文)) }
+work(pj)    = max { w      | d ∈ Journals, t ∈ Tasks(d), hits(pj, t.refs), w ∈ worked(t) }
 
 worked(t)   = { d.date   | t.status = Done }
             ∪ { log.date | log ∈ t.logs, log.time ≠ None }
@@ -172,16 +195,19 @@ worked(t)   = { d.date   | t.status = Done }
 - `max` を採る（走査順に依存させない）。時刻付きログは自分の日付を持つので、新しいジャーナルに前日ぶんを書き足せる。
 - 観測範囲を `Journals` に限る。Project ノート自身の `## ログ` は `log_last` が担当する別の観測である。
 
-**この定義のもとで「実働 ⊆ 言及」は定理になる。** ジャーナルは Project ノートではないので収容経路が効かず、`projects(t) = refs(t.text) ⊆ refs(d の全文)`。したがって `work(pj) ≠ ⊥ ⟹ mention(pj) ≠ ⊥` が構造から従う。現状はこれを**規律**（両者で同じ `collect_refs` を呼ぶ）で守っており、破れうるので §7 I-17 に不変条件として書いてある。導出に直せば規律が不要になる（§11 G-4）。
+**両者とも §2.3 の層 2（参照）だけを使い、層 1（収容）にも層 4（役割）にも触れない。** 違いは参照を集める範囲だけで、言及は文書全体、実働はタスク行に限る。
+
+**この定義のもとで「実働 ⊆ 言及」は定理になる。** タスク行は文書の一部なので `t.refs ⊆ refs(d の全文)`、したがって `hits(pj, t.refs) ⟹ hits(pj, refs(d の全文))`、すなわち `work(pj) ≠ ⊥ ⟹ mention(pj) ≠ ⊥`。集合の包含から従うだけで、PJ の概念も収容経路も出てこない。現状はこれを**規律**（両者で同じ `collect_refs` を呼ぶ）で守っており、破れうるので §7 I-17 に不変条件として書いてある。導出に直せば規律が不要になる（§11 G-4）。
 
 ### 2.6 全体図
 
 ```mermaid
 erDiagram
-    DOCUMENT ||--o{ TASK : "含む"
-    DOCUMENT ||--o| PROJECT : "front.project を持てば PJ の役割を帯びる"
+    DOCUMENT ||--o{ TASK : "層1 収容"
     TASK ||--o{ LOG : "配下に持つ（インデント厳密大なり）"
-    TASK }o--o{ PROJECT : "帰属 = 収容 ∪ 参照"
+    TASK ||--o{ REF : "層2 参照"
+    REF }o--o| DOCUMENT : "層3 解決（解決先が無い Ref もある）"
+    DOCUMENT ||--o| PROJECT : "層4 役割（front.project を持つ）"
     PROJECT ||--|| OBSERVATION : "外から観測される"
 
     DOCUMENT {
@@ -189,16 +215,20 @@ erDiagram
         Date date "パス由来。journal のみ"
         FrontMatter front "内容由来"
     }
+    TASK {
+        Location at PK "Document と行番号"
+        Status status "Todo / Done / Cancelled"
+        String text "本文"
+    }
+    REF {
+        RefKind kind "WikiName / Tag"
+        String text "[[名前]] の中身 / #タグ"
+    }
     PROJECT {
         PjId id PK "ノートのファイル名"
         Status status "active / someday / done"
         Task next_action "## 次の予定 の先頭"
         Backlog backlog "## オープンタスク"
-    }
-    TASK {
-        Location at PK "Document と行番号"
-        Status status "Todo / Done / Cancelled"
-        PjIdSet projects "収容 ∪ 参照"
     }
     LOG {
         Date date "自分の日付を持つ"
@@ -212,7 +242,11 @@ erDiagram
     }
 ```
 
-`PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2.2）。`OBSERVATION` も保存される実体ではなく、実行のたびに世界を見て作られる値である。この 2 つが「概念としては別だが、出力では 1 つの構造体に平坦化される」という関係にある。
+読み方:
+
+- **`TASK` から `PROJECT` への辺は無い。** 層 2 → 3 → 4 を辿って初めて届く（§2.3）。タグ別ビューは層 2 で止まるので、この図の右半分を必要としない。
+- `PROJECT` の箱は独立したレコードではなく **`DOCUMENT` の役割**である（§2.2）。`DOCUMENT` から出る辺が 2 本（層 1 と層 4）あるのはそのためで、層 3 の解決先として戻ってくる辺も同じ `DOCUMENT` である。
+- `OBSERVATION` も保存される実体ではなく、実行のたびに世界を見て作られる値である。`PROJECT` とは「概念としては別だが、出力では 1 つの構造体に平坦化される」関係にある。
 
 ## 3. ドメインの語彙
 
@@ -911,24 +945,22 @@ stateDiagram-v2
 | `Observation` | `cli::pj::PjProject` の b〜e 層（§6.6） | — |
 | `Task` | `ParsedTask` / `ParsedTaskWithDate` / `ScheduleEntry` / `next_action: String` | G-3・G-7 |
 | `Log` | `ParsedTaskWithDate.log` / `ScheduleEntry` / `pj::PjLogEntry` の 3 通り | G-7 |
+| `Ref` | 型として存在しない（`String`。名前とタグが混ざった `Vec<String>`） | G-2 |
 | `PjId` | 型として存在しない（`String`） | G-2 |
-| `projects(task)` | `extract_file_tags` / `pj::collect_refs` / `pj::parse_pj_note` の 3 経路 | G-1 |
-| `resolve(ref, docs)` | `wiki_link::resolve_wiki_link` と `refs.contains` の 2 系統 | G-5・G-6 |
+| 層 1 収容 | `FileInput.file_uri` + `ParsedTask.line` | G-8 |
+| 層 2 参照 | `pj::collect_refs` | — |
+| 層 3 解決 | `wiki_link::resolve_wiki_link` と `refs.contains` の 2 系統 | G-5・G-6 |
+| 層 4 役割 | `parse_front_matter` + `cli::pj::collect_projects` | — |
+| `projects(task)`（層 1〜4 の合成） | 合成として存在しない。`extract_file_tags` が層 1 の導出で層 4 を先取りしている | G-1 |
 | `mention` / `work` | `cli::pj::journal_dates`（ジャーナルを直接読む） | G-4 |
 
-**G-1 帰属が 3 経路に分かれている。**
+**G-1 タグ導出が層をまたいで PJ の `status` を見ている。**
 
-- 現状: 3 つの関数がそれぞれ別に「タスクと PJ の対応」を作っている。
+- 現状: `extract_file_tags` は「ファイル名をそのファイル内の全タスクのタグにする」導出、すなわち §2.3 の層 1・2 の話である。にもかかわらず `project: active` を条件にしており、層 4（Document → Project の役割）の情報を層 1 の導出が参照している。
+- 目標: タグ導出を層 1・2 で完結させ、`status` に依存させない。絞り込みは表示側（タグ別ビュー・`list --tag`）の責務とする。
+- 影響: `someday` / `done` の PJ ノートに書いたタスクにもファイル名タグが付く。出したくなければ表示側でフィルタする。requirements.md 2.2 の「`someday` / `done` では自動タグを付与しない」は、パーサーの要求ではなくビューの要求として書き直すことになる。
 
-  | 経路 | 実装 | 向き | `status` 依存 |
-  | --- | --- | --- | --- |
-  | 収容（ファイル自動タグ） | `extract_file_tags` | ファイル → タスク | **`active` のみ** |
-  | 参照 | `pj::collect_refs` | タスク → PJ | なし |
-  | 構造 | `pj::parse_pj_note` | セクション → タスク | なし |
-
-  `taski list` は前 2 つ、`taski pj` は 3 つ目だけを見るので、両者は別の世界を見ている。
-- 目標: §2.3 の `projects(task)` 1 つに集約し、`status` 非依存にする。
-- 影響: `someday` / `done` の PJ ノートに書いたタスクが帰属を持つようになる。タグ別ビューや `list --tag` に出したくなければ**表示側でフィルタする**（帰属は事実、表示は判断）。requirements.md 2.2 の「`someday` / `done` では自動タグを付与しない」は、パーサーの要求ではなくビューの要求として書き直すことになる。
+**`extract_file_tags` / `collect_refs` / `parse_pj_note` の 3 つは「同じ概念の 3 実装」ではない。** 順に層 1 のタグ導出・層 2 の参照抽出・PJ ノート内での役割であり、統合すべきものではない。`taski list` と `taski pj` が別世界を見ているように見えるのは、前者が層 1・2 で止まり、後者が層 3・4 まで辿るからである（§2.3）。この差は設計であって欠陥ではない。実際に直すべきなのは、上の層またぎ（G-1）と、層 3 が 2 系統あること（G-5）の 2 点だけである。
 
 **G-2 `PjId` が無く、表記変換が 2 箇所に独立実装されている。**
 
