@@ -599,13 +599,27 @@ pub fn extract_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `project: active` が front matter にあればファイル名 (拡張子除去・空白は `_`) を
-/// 唯一のタグとして返す。`someday`（棚上げ）・`done`・未指定の場合は空配列。
+/// front matter の `project:` の値。PJ ノートでなければ `None`。
+///
+/// 表示側が「棚上げ・完了の PJ を一覧に出すか」を決めるために引く（[`visible_file_tags`]）。
+pub fn project_status(lines: &[String]) -> Option<ProjectStatus> {
+    parse_front_matter(lines)?
+        .state
+        .as_ref()
+        .map(ProjectState::status)
+}
+
+/// PJ ノートのファイル名を、そのファイル内の全タスクのタグとして返す（docs/domain.md §3）。
+///
+/// **`project:` の値は見ない。** これは層 1（収容）と層 2（参照）だけで決まる導出で、
+/// 「棚上げか完了か」という層 4 の情報を混ぜてはならない。かつては
+/// `project: active` を条件にしており、「どの PJ か」（事実）に「表示するか」（判断）が
+/// 混入していた（design.md G-1）。絞り込みは [`visible_file_tags`] の役目。
 pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
     let Some(fm) = parse_front_matter(lines) else {
         return Vec::new();
     };
-    if fm.state.as_ref().map(ProjectState::status) != Some(ProjectStatus::Active) {
+    if fm.state.is_none() {
         return Vec::new();
     }
     let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
@@ -615,6 +629,19 @@ pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
         return Vec::new();
     }
     vec![tag]
+}
+
+/// タグ別ビューに出すファイル単位タグ。**導出ではなく表示の方針である。**
+///
+/// `someday`（着手を棚上げ）・`done`（完了済み）の PJ を一覧に出さないのは、事実では
+/// なく判断である。判断は導出（[`extract_file_tags`]）から切り離すが、VS Code のタグ別
+/// ビューと `taski list --tag` の 2 つのビューが同じ方針を持つ必要があるので、方針
+/// そのものはここに 1 つだけ置いて共有する（design.md P4）。
+pub fn visible_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
+    match project_status(lines) {
+        Some(ProjectStatus::Active) => extract_file_tags(lines, file_name),
+        _ => Vec::new(),
+    }
 }
 
 // === Tests ===
@@ -1776,17 +1803,28 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_file_tags_project_someday() {
-        let l = lines(&["---", "project: someday", "---"]);
-        let empty: Vec<String> = vec![];
-        assert_eq!(extract_file_tags(&l, "projectA.md"), empty);
+    fn test_extract_file_tags_ignores_project_value() {
+        // 導出は層 1・2 で完結する。`someday` / `done` でもタグは付く（G-1）
+        for value in ["active", "someday", "done"] {
+            let l = lines(&["---", &format!("project: {value}"), "---"]);
+            assert_eq!(
+                extract_file_tags(&l, "projectA.md"),
+                vec![s("projectA")],
+                "project: {value}"
+            );
+        }
     }
 
     #[test]
-    fn test_extract_file_tags_project_done() {
-        let l = lines(&["---", "project: done", "---"]);
+    fn test_visible_file_tags_hides_someday_and_done() {
+        // 「棚上げ・完了を一覧に出さない」のは表示の方針であって導出ではない
         let empty: Vec<String> = vec![];
-        assert_eq!(extract_file_tags(&l, "projectA.md"), empty);
+        for value in ["someday", "done"] {
+            let l = lines(&["---", &format!("project: {value}"), "---"]);
+            assert_eq!(visible_file_tags(&l, "projectA.md"), empty, "project: {value}");
+        }
+        let l = lines(&["---", "project: active", "---"]);
+        assert_eq!(visible_file_tags(&l, "projectA.md"), vec![s("projectA")]);
     }
 
     #[test]

@@ -738,7 +738,9 @@ stateDiagram-v2
 - **W-5. `repo_last` と基準日のタイムゾーン差。** `%ad`（author date）はコミット自身のタイムゾーンで描画されるため、自分より東のタイムゾーンで作られたコミットはローカルの「今日」より 1 日先の日付を持ちうる。それが未来として除外されると `repo_last` が 1 つ古いコミットに巻き戻り、`unreported` が false に倒れる。同様に、ジャーナルの時刻付きログが自分のファイル日付より後の日付を持つ場合、I-17 の日付についての含意（`journal_work_last ≤ journal_last`）は成り立たない。個人利用では発生頻度が低いので許容している。
 - **W-6. `PjProject.status` は `String`。** `parser-core` 側は `ProjectStatus` の列挙だが、JSON の表現を固定するため出力型では文字列に落としている。追加時は `status_label` と `parse_status_filter` の両方を更新する必要がある（型では強制されない）。
 - **W-7. JSON のキー命名が層で違う。** `parser-core` の境界型は `#[serde(rename_all = "camelCase")]` を持つ（TypeScript 側の慣習に合わせるため）が、`cli::pj` の出力型は指定なし＝ snake_case である。結果として `taski list --format json` は `fileUri` / `dateKey`、`taski pj --format json` は `next_action` / `log_last` を出す。同一 CLI の中で不揃いだが、どちらも既に利用側の契約になっているので揃えない。`PjHealth` だけは kebab-case 指定で `no-next` / `unclarified` / `ok` を出す。
-- **W-8. Project の同一性がパスに依存する。** `PjId` はノートのファイル名なので、リネームすると別の Project になる。ジャーナルに残った `[[旧名]]` は解決先を失い、その Project の言及・実働の履歴が途切れる（`journal_last` / `journal_work_last` が `null` に戻る）。front matter に安定 ID を持たせれば切り離せるが、参照側は `[[名前]]` のままなので、リンクの追随は別途必要になる。現状は「リネームしない・するなら参照も一括で書き換える」という運用で回避している。改めるなら §11 の制約に従う。
+- **W-8. タグ導出が `project:` の有無だけは見る。** `extract_file_tags` は `project:` の**値**に依存しなくなったが、キーが存在すること自体は条件に残っている。domain.md §3 の `tags(task)` は front matter を一切見ない形なので、厳密にはまだ層 4 を参照している。条件を外すとすべての文書のタスクにファイル名タグが付き、ジャーナルの全タスクが日付名のタグを持つことになる（実データで 179 件）。タグ別ビューの見え方が変わりすぎるので、PJ ノートに限る形で止めると決めた。
+- **W-9. `resolve` は「唯一の d」ではなく候補列の先頭を採る。** domain.md §4 は探索範囲の中で `match_key` が一意であることを要求するが、requirements.md 3.4 の優先順位（`$HOME/taski` > ワークスペース > 追加ディレクトリ > 開いているドキュメント）は探索範囲をまたいだ一致を前提にしている。一意性を課せるのは 1 つの範囲の中だけで、実際に課しているのは PJ ノートの集合に対してだけである（`cli::pj` が衝突を stderr に警告する）。
+- **W-10. Project の同一性がパスに依存する。** `PjId` はノートのファイル名なので、リネームすると別の Project になる。ジャーナルに残った `[[旧名]]` は解決先を失い、その Project の言及・実働の履歴が途切れる（`journal_last` / `journal_work_last` が `null` に戻る）。front matter に安定 ID を持たせれば切り離せるが、参照側は `[[名前]]` のままなので、リンクの追随は別途必要になる。現状は「リネームしない・するなら参照も一括で書き換える」という運用で回避している。改めるなら §11 の制約に従う。
 
 ## 10. ドメインモデルとの差分（移行課題）
 
@@ -764,25 +766,19 @@ domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。�
 | `PjId` | `pj::PjId`（`#[serde(transparent)]`）。照合キーは `PjId::match_key` の 1 箇所 | — |
 | 層 1 収容 | `FileInput.file_uri` + `ParsedTask.line`。`at` という 1 つの値になっていない | G-7 |
 | 層 2 参照 | `pj::collect_refs` | — |
-| 層 3 解決 | `wiki_link::resolve_wiki_link` と `refs.contains` の 2 系統 | G-5・G-6 |
+| 層 3 解決 | `wiki_link::resolve`（`hits` の上に載る）。PJ 側は `PjId::hits` で同じ関係 | — |
 | 層 4 役割 | `parse_front_matter` + `cli::pj::collect_projects` | — |
-| `projects(task)`（層 1〜4 の合成） | 合成として存在しない。`extract_file_tags` が層 1 の導出で層 4 を先取りしている | G-1 |
+| `projects(task)`（層 1〜4 の合成） | 合成として存在しない。層ごとの関数はあるが繋がっていない | G-3 |
 | `mention` / `work` | `cli::pj::journal_dates`（ジャーナルを直接読む） | G-4 |
 
-**G-1 タグ導出が層をまたいで PJ の `status` を見ている。**
-
-- 現状: `extract_file_tags` は「ファイル名をそのファイル内の全タスクのタグにする」導出、すなわち domain.md §3 の層 1・2 の話である。にもかかわらず `project: active` を条件にしており、層 4（Document → Project の役割）の情報を層 1 の導出が参照している。
-- 目標: タグ導出を層 1・2 で完結させ、`status` に依存させない。絞り込みは表示側（タグ別ビュー・`list --tag`）の責務とする。
-- 影響: `someday` / `done` の PJ ノートに書いたタスクにもファイル名タグが付く。出したくなければ表示側でフィルタする。requirements.md 2.2 の「`someday` / `done` では自動タグを付与しない」は、パーサーの要求ではなくビューの要求として書き直すことになる。
-
-**`extract_file_tags` / `collect_refs` / `parse_pj_note` の 3 つは「同じ概念の 3 実装」ではない。** 順に層 1 のタグ導出・層 2 の参照抽出・PJ ノート内での役割であり、統合すべきものではない。`taski list` と `taski pj` が別世界を見ているように見えるのは、前者が層 1・2 で止まり、後者が層 3・4 まで辿るからである（domain.md §3）。この差は設計であって欠陥ではない。実際に直すべきなのは、上の層またぎ（G-1）と、層 3 が 2 系統あること（G-5）の 2 点だけである。
+**`extract_file_tags` / `collect_refs` / `parse_pj_note` の 3 つは「同じ概念の 3 実装」ではない。** 順に層 1 のタグ導出・層 2 の参照抽出・PJ ノート内での役割であり、統合すべきものではない。`taski list` と `taski pj` が別世界を見ているように見えるのは、前者が層 1・2 で止まり、後者が層 3・4 まで辿るからである（domain.md §3）。この差は設計であって欠陥ではない。層またぎ（G-1）も層 3 の 2 系統（G-5）も解消済みで、この 3 つは今後も統合しない。
 
 **G-2 `Ref` が型になっておらず、名前とタグが混ざっている。**
 
 - 現状: `collect_refs` は `Vec<String>` を返し、`[[名前]]` 由来か `#タグ` 由来かは失われる。照合は `match_key` を両側に掛けて行うので実害は無いが、domain.md §1 の `Ref = WikiName | Tag` という直和が型に現れていない。
 - 目標: `Ref` を直和にする。`text(r)` はどちらからも取れるので、照合（`hits`）の実装は変わらない。
 - 影響: 小さい。`collect_refs` の戻り値型だけが変わり、`taski pj` の出力には `Ref` そのものは出ていない。
-- 補足: `PjId` と `match_key` の一元化は済んでいる（照合キーの衝突は `cli::pj` が stderr に警告する）。曖昧さを `None` に落とすところまでは G-5 の担当である。
+- 補足: `PjId` と `match_key` の一元化、および解決の一本化（`hits` / `resolve`）は済んでいる。
 
 **G-3 PJ ノートのタスクが Task 型になっていない。**
 
@@ -795,25 +791,6 @@ domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。�
 - 現状: `cli::pj::journal_dates` がジャーナルの本文を直接読んで言及と実働を集める。Task の集合を作らないので、I-17（実働 ⊆ 言及）は「両者が同じ `collect_refs` を呼ぶ」という規律でしか守られていない。
 - 目標: domain.md §5 の導出に直す。I-17 が定理になり、不変条件として書く必要がなくなる。
 - 影響: 素朴に置き換えると遅くなる。現状は「見つけたら打ち切り」の早期終了（`remaining_mention` / `remaining_work`）が効いていて、全ジャーナルを読み切らない。導出形にしてもこの枝刈りを保てる形にする必要がある。
-
-**G-5 参照の解決が 2 系統ある。**
-
-- 現状:
-
-  | 用途 | 実装 | 探索範囲 |
-  | --- | --- | --- |
-  | `[[n]]` を開く | `wiki_link::resolve_wiki_link` | taski home 配下の**全 md**。パスのソート順で先頭一致 |
-  | PJ を照合する | `refs.contains(name) \|\| refs.contains(tag)` | `note/` **直下のみ**。文字列一致 |
-
-  同じ `[[在庫管理]]` が、開く時はファイル探索で、集計時は文字列一致で解決される。`note/sub/在庫管理.md` に `project: active` を書くと「開けるが PJ にならない」。
-- 目標: domain.md §4 の `resolve` 1 本に集約する。
-- 影響: PJ の探索範囲を広げるかは別の判断（G-6）。「解決関数を一致させること」と「範囲を決めること」を分けて扱う。
-
-**G-6 走査範囲が非対称。**
-
-- 現状: ジャーナルは再帰（`cli::pj::collect_journal_files`）、PJ ノートは直下のみ（`cli::pj::collect_note_files`）、`taski list` は taski home 全体を再帰（`main::collect_md_files`）。3 つの走査規則が別々に書かれている。
-- 目標: Document 集合を作る関数を 1 つにし、用途ごとの絞り込みは述語で表す。
-- 未決: PJ ノートを `note/**` に広げるか。広げると `note/archive/` のような置き場が PJ として拾われ、`status` による絞り込みと役割が重なる。
 
 **G-7 ログの表現が 3 つあり、Task への帰属が型に無い。**
 
@@ -845,7 +822,7 @@ domain.md の目標形と現状の実装（§5〜§7）の差を列挙する。�
 
   | 影響 | 内容 |
   | --- | --- |
-  | 書式の規約 | 「チェックボックスは `## 次の予定` だけ」が不要になる。PJ ノートが複数の Task を持てるようになり、それらは `taski list` の「日付なし」グループに出る。絞り込みはビュー側の責務とする（G-1 と同じ結論） |
+  | 書式の規約 | 「チェックボックスは `## 次の予定` だけ」が不要になる。PJ ノートが複数の Task を持てるようになり、それらは `taski list` の「日付なし」グループに出る。絞り込みはビュー側の責務とする（`visible_file_tags` と同じ形） |
   | 出力契約 | `taski pj` から `next_action` / `next_action_body` / `next_action_meta` / `next_action_ai` / `backlog` / `backlog_count` が消え、未完了 Task の列（位置つき）が入る。`cli/AGENTS.md` と利用側 skill の同時修正が要る |
   | `health` の名前 | `PjHealth::NoNext` が `NoTodo` になる（domain.md §2）。判定しているのは「未完了 Task が 1 つも無い」ことで、`next_action` 由来の名前は概念ごと消える。JSON の値も `no-next` → `no-todo` に変わるので、これも出力契約の一部である（W-7） |
   | 実装 | `split_sections` / `extract_next_action` / `extract_backlog` が不要になる。`extract_logs` は「帰属しない Log」の抽出に変わる |

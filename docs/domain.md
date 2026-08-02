@@ -235,7 +235,7 @@ Observation(pj) = ジャーナル由来（§5）∪ git 由来 ∪ ファイル�
 | --- | --- | --- | --- |
 | 1 | Task → Document | **収容**。どの文書に書かれているか。`task.at` の一部であり、独立した関係ではなく同一性そのもの | `FileInput.file_uri` + `ParsedTask.line` |
 | 2 | Task → Ref | **参照**。行から `[[名前]]` / `#タグ` を抽出する | `pj::collect_refs` |
-| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve_wiki_link` と `refs.contains` の 2 系統（design.md G-5） |
+| 3 | Ref → Document | **解決**。その名前がどの文書を指すか。解決先が無い `Ref` は普通にある（`#買い物`） | `wiki_link::resolve`（`hits` の上に載る） |
 | 4 | Document → Project | **役割**。`front.project` を持つか（§2） | `parse_front_matter` |
 
 PJ 軸はこの合成として導出する。
@@ -255,9 +255,9 @@ projects(task) = { d ∈ docs(task) | d ∈ Project }                           
 tags(task) = { text(r) | r ∈ task.refs, r は Tag } ∪ { match_key(stem(task.at.0.path)) }
 ```
 
-これは `extract_tags` と `extract_file_tags` の和そのもので、Project の概念を一切要求しない（`stem` はファイル名から拡張子を落としたもの、`match_key` は空白を `_` に置換する照合キー — どちらも §4）。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**（実際に分裂しているのは層 3 だけ — design.md G-5）
+これは `extract_tags` と `extract_file_tags` の和にあたり、Project の `status` を要求しない（`stem` はファイル名から拡張子を落としたもの、`match_key` は空白を `_` に置換する照合キー — どちらも §4）。一方 `taski pj` は層 3・4 を通る。**両者が別世界を見ているように見えるのは、別の層の合成を見ているからであって、同じ概念が分裂しているからではない。**
 
-**層をまたいだ依存を持ち込まない。** 現状の `extract_file_tags` は層 1 のタグ導出でありながら `project: active` を条件にしており、層 4 の情報を見ている。「どの PJ か」（事実）に「表示するか」（判断）が混入した形である。タグ導出は層 1・2 で完結させ、`status` による絞り込みは表示側の責務とする（design.md G-1）。
+**層をまたいだ依存を持ち込まない。** タグ導出は `status` を見ない。「どの PJ か」（事実）と「表示するか」（判断）を混ぜないためで、`someday` / `done` による絞り込みは表示側の責務である（`visible_file_tags`）。ただし `project:` というキーが**存在すること**自体は条件に残っており、上の式とは厳密には一致しない（design.md W-8）。
 
 なお本ドキュメントで**「帰属」と呼ぶのは Log と Task の関係（§1・design.md §4）だけ**である。Task と Project の間にあるのは上の 4 層とその合成であって、帰属ではない。
 
@@ -295,7 +295,7 @@ Wiki リンクを開く時と PJ を照合する時で、同じ `resolve` を通
 hits(pj, r) ⟺ resolve(r, D) = Some(pj)        -- pj ∈ Project ⊂ Document（§2）
 ```
 
-以降 §5 で `hits(pj, …)` と書くのは、この同値による省略である。この形にすると「`note/` 直下にあるか」は概念から消え、探索範囲 `D` の設定という実装事項に退く（現状は 2 系統に分かれている — design.md G-5）。
+以降 §5 で `hits(pj, …)` と書くのは、この同値による省略である。この形にすると「`note/` 直下にあるか」は概念から消え、探索範囲 `D` の設定という実装事項に退く。
 
 ## 5. 観測値の導出
 

@@ -6,7 +6,7 @@ use chrono::Local;
 use crate::docs::collect_md_files;
 use clap::{Parser, Subcommand};
 use parser_core::{
-    build_schedule_data_internal, build_tree_data_internal, extract_file_tags, extract_tags,
+    build_schedule_data_internal, build_tree_data_internal, extract_tags, visible_file_tags,
     FileInput, ScheduleEntry, TaskStatus, TreeDateGroup,
 };
 use std::fs;
@@ -323,7 +323,10 @@ fn list_tasks(format: Option<String>, tag: Option<String>) {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            (f.file_uri.clone(), extract_file_tags(&f.lines, &base_name))
+            (
+                f.file_uri.clone(),
+                visible_file_tags(&f.lines, &base_name),
+            )
         })
         .collect();
 
