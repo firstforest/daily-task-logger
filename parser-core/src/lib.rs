@@ -572,12 +572,48 @@ pub fn build_schedule_data_internal(
 
 // === Front matter ===
 
+/// front matter の `project:` に書ける 3 つの値。
+///
+/// 完了日を含まない「種別」なので、`--status` の絞り込みと表示ラベルはこちらで行う。
+/// 関与の状態そのものは [`ProjectState`]。
 #[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
     Active,
     Someday,
     Done,
+}
+
+/// PJ の関与の状態（docs/domain.md §2）。
+///
+/// `completed` は `done` のときだけ意味を持つので状態の中に畳む。独立したフィールドに
+/// すると `active` かつ `completed: 2026-01-01` という無意味な組み合わせが表現できて
+/// しまう。front matter の 2 キー表記（`project:` / `completed:`）は変えず、読み取った
+/// あとの型だけを畳んでいる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectState {
+    Active,
+    Someday,
+    Done { completed: Option<String> },
+}
+
+impl ProjectState {
+    /// 完了日を落とした種別。
+    pub fn status(&self) -> ProjectStatus {
+        match self {
+            ProjectState::Active => ProjectStatus::Active,
+            ProjectState::Someday => ProjectStatus::Someday,
+            ProjectState::Done { .. } => ProjectStatus::Done,
+        }
+    }
+
+    /// 完了日。`done` 以外では常に `None`。
+    pub fn completed(&self) -> Option<&str> {
+        match self {
+            ProjectState::Done { completed } => completed.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Debug, Default)]
@@ -610,17 +646,24 @@ pub fn parse_front_matter(lines: &[String]) -> Option<FrontMatterParsed> {
     }
     let fm: FrontMatter = serde_yml::from_str(&body).ok()?;
     Some(FrontMatterParsed {
-        project: fm.project,
+        state: fm.project.map(|status| match status {
+            ProjectStatus::Active => ProjectState::Active,
+            ProjectStatus::Someday => ProjectState::Someday,
+            // `completed:` を拾うのは `done` のときだけ。`active` に添えられた完了日は
+            // 意味を持たないので、ここで落として型から表現できなくする
+            ProjectStatus::Done => ProjectState::Done {
+                completed: fm.completed,
+            },
+        }),
         repo: fm.repo,
-        completed: fm.completed,
     })
 }
 
 #[derive(Debug, Default, PartialEq)]
 pub struct FrontMatterParsed {
-    pub project: Option<ProjectStatus>,
+    /// `project:` が無ければ `None`（＝ PJ ノートではない）
+    pub state: Option<ProjectState>,
     pub repo: Option<String>,
-    pub completed: Option<String>,
 }
 
 // === Tag extraction ===
@@ -645,7 +688,7 @@ pub fn extract_file_tags(lines: &[String], file_name: &str) -> Vec<String> {
     let Some(fm) = parse_front_matter(lines) else {
         return Vec::new();
     };
-    if fm.project != Some(ProjectStatus::Active) {
+    if fm.state.as_ref().map(ProjectState::status) != Some(ProjectStatus::Active) {
         return Vec::new();
     }
     let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
@@ -1668,28 +1711,28 @@ mod tests {
             "- [ ] タスク",
         ]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Active));
+        assert_eq!(fm.state, Some(ProjectState::Active));
     }
 
     #[test]
     fn test_parse_front_matter_project_someday() {
         let l = lines(&["---", "project: someday", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Someday));
+        assert_eq!(fm.state, Some(ProjectState::Someday));
     }
 
     #[test]
     fn test_parse_front_matter_project_done() {
         let l = lines(&["---", "project: done", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Done));
+        assert_eq!(fm.state, Some(ProjectState::Done { completed: None }));
     }
 
     #[test]
     fn test_parse_front_matter_project_missing() {
         let l = lines(&["---", "other: value", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, None);
+        assert_eq!(fm.state, None);
     }
 
     #[test]
@@ -1714,7 +1757,7 @@ mod tests {
     fn test_parse_front_matter_empty_body() {
         let l = lines(&["---", "---"]);
         let fm = parse_front_matter(&l).expect("empty front matter is valid");
-        assert_eq!(fm.project, None);
+        assert_eq!(fm.state, None);
     }
 
     #[test]
@@ -1735,8 +1778,21 @@ mod tests {
         // クォートなしの日付が String として読めること（実データはこの書き方）
         let l = lines(&["---", "project: done", "completed: 2026-05-31", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Done));
-        assert_eq!(fm.completed.as_deref(), Some("2026-05-31"));
+        assert_eq!(
+            fm.state,
+            Some(ProjectState::Done {
+                completed: Some(s("2026-05-31")),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_front_matter_completed_is_dropped_unless_done() {
+        // `active` に添えられた完了日は状態として無意味なので型から落とす（G-9）
+        let l = lines(&["---", "project: active", "completed: 2026-05-31", "---"]);
+        let fm = parse_front_matter(&l).expect("front matter should parse");
+        assert_eq!(fm.state, Some(ProjectState::Active));
+        assert_eq!(fm.state.as_ref().and_then(ProjectState::completed), None);
     }
 
     #[test]
@@ -1744,14 +1800,14 @@ mod tests {
         let l = lines(&["---", "project: active", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
         assert_eq!(fm.repo, None);
-        assert_eq!(fm.completed, None);
+        assert_eq!(fm.state.as_ref().and_then(ProjectState::completed), None);
     }
 
     #[test]
     fn test_parse_front_matter_unknown_field_ignored() {
         let l = lines(&["---", "project: active", "future_field: 何か", "---"]);
         let fm = parse_front_matter(&l).expect("front matter should parse");
-        assert_eq!(fm.project, Some(ProjectStatus::Active));
+        assert_eq!(fm.state, Some(ProjectState::Active));
     }
 
     // --- extract_file_tags tests ---

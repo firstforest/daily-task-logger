@@ -16,7 +16,7 @@ use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
 use parser_core::pj::{collect_document_refs, journal_work, parse_pj_note, PjHealth, PjLogEntry};
-use parser_core::{parse_front_matter, ProjectStatus};
+use parser_core::{parse_front_matter, ProjectState, ProjectStatus};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -627,9 +627,8 @@ fn collect_projects(
     struct Pending {
         name: String,
         rel_path: String,
-        status: ProjectStatus,
+        state: ProjectState,
         repo: Option<String>,
-        completed: Option<String>,
         note: parser_core::pj::PjNote,
     }
 
@@ -643,10 +642,10 @@ fn collect_projects(
         let Some(fm) = parse_front_matter(&lines) else {
             continue;
         };
-        let Some(status) = fm.project else {
+        let Some(state) = fm.state else {
             continue;
         };
-        if !statuses.contains(&status) {
+        if !statuses.contains(&state.status()) {
             continue;
         }
         let name = path
@@ -662,9 +661,8 @@ fn collect_projects(
         pending.push(Pending {
             name,
             rel_path,
-            status,
+            state,
             repo: fm.repo,
-            completed: fm.completed,
             note: parse_pj_note(&lines),
         });
     }
@@ -725,10 +723,10 @@ fn collect_projects(
             PjProject {
                 name: p.name,
                 path: p.rel_path,
-                status: status_label(p.status).to_string(),
+                status: status_label(p.state.status()).to_string(),
                 repo_abs: p.repo.as_deref().and_then(repo_abs_path),
                 repo: p.repo,
-                completed: p.completed,
+                completed: p.state.completed().map(str::to_string),
                 next_action: p.note.next_action,
                 next_action_body: p.note.next_action_body,
                 next_action_meta: p.note.next_action_meta,
