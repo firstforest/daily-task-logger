@@ -19,7 +19,7 @@ use parser_core::pj::{
     collect_document_refs, journal_work, parse_pj_note, PjHealth, PjId, PjLogEntry,
 };
 use parser_core::wiki_link::match_key;
-use parser_core::{parse_front_matter, ProjectState, ProjectStatus};
+use parser_core::{parse_front_matter, DocumentHeader, ProjectState, ProjectStatus};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -302,7 +302,7 @@ fn journal_dates(base_dir: &Path, names: &[PjId], today: &str) -> JournalDates {
         }
         // 参照名 → そのファイルでの最新の実働日。時刻付きログは自分の日付を持つので、
         // ファイル名の日付と一致しないことがある
-        let works = journal_work(&lines, &date);
+        let works = journal_work(&lines, &DocumentHeader::journal(&date));
         let mut latest: HashMap<String, &str> = HashMap::new();
         for w in works.iter().filter(|w| !is_future(&w.date, today)) {
             for r in &w.refs {

@@ -428,10 +428,14 @@ fn indent_width(line: &str) -> usize {
 
 /// journal 1日分の本文から「実働」を取り出す。
 ///
+/// 日付は文書のヘッダから受け取る。基準日（`today`）と同じ `&str` で渡していると
+/// 取り違えても通ってしまうため（docs/design.md G-8）。`doc.date` が `None`（＝
+/// ジャーナルでない文書）なら実働は 1 件も出ない。
+///
 /// `## 今日の候補` に載っただけ・他タスクの文中で触れられただけの「言及」と区別するため、
 /// 参照を持つタスク行そのものが次のいずれかを満たす場合だけ実働と見なす。
 ///
-/// - `- [x]` で完了している → その journal の日付（`file_date`）
+/// - `- [x]` で完了している → その journal の日付（`doc.date`）
 /// - 時刻付きログ（`- YYYY-MM-DD HH:MM: ...`）を持つ → そのログ行の日付
 ///
 /// 時刻の無いログ（`- YYYY-MM-DD: ...`）は実働と見なさない。journal では
@@ -441,7 +445,10 @@ fn indent_width(line: &str) -> usize {
 /// 見出し・兄弟の箇条書き・段落が挟まった時点でタスクの文脈を閉じるので、
 /// `## 今日の候補` に PJ を並べた後、別セクションに無関係な時刻メモを書いても
 /// 実働にはならない。ここを緩めると「候補に載せただけ」が実働に化ける。
-pub fn journal_work(lines: &[String], file_date: &str) -> Vec<JournalWork> {
+pub fn journal_work(lines: &[String], doc: &crate::DocumentHeader) -> Vec<JournalWork> {
+    let Some(file_date) = doc.date.as_deref() else {
+        return Vec::new();
+    };
     let task = indented_task_re();
     let timed = timed_log_re();
     let fence = fence_re();
@@ -835,7 +842,7 @@ mod tests {
     #[test]
     fn test_journal_work_completed_task() {
         let l = lines(&["# 2026-08-01", "- [x] [[永夜]] のカードを作る"]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
     }
 
@@ -847,7 +854,7 @@ mod tests {
             "- [ ] [[永夜]] のカードを作る",
             "    - 2026-08-01 10:00-11:30: 下書きまで",
         ]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
     }
 
@@ -860,7 +867,7 @@ mod tests {
             "- [ ] [[在庫管理]] を進める",
             "- [ ] 別のタスク（[[在庫管理]] とも関係する）",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
@@ -871,14 +878,14 @@ mod tests {
             "- [ ] [[在庫管理]] を進める",
             "    - 2026-08-01: あとでやる",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
     fn test_journal_work_cancelled_task_is_not_work() {
         // 見送り（着手せず）は実働ではない
         let l = lines(&["# 2026-08-01", "- [-] [[在庫管理]] を進める"]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
@@ -890,7 +897,7 @@ mod tests {
             "- [-] [[在庫管理]] を進める",
             "  - 2026-08-01 10:00: 30分触ってやめた",
         ]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(works.len(), 1);
         assert_eq!(works[0].date, "2026-08-01");
     }
@@ -898,7 +905,7 @@ mod tests {
     #[test]
     fn test_journal_work_by_tag() {
         let l = lines(&["# 2026-08-01", "- [x] カードを作る #永夜"]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
         // 前方一致で誤爆しない
         assert!(work_dates(&works, "永夜祭").is_empty());
@@ -912,7 +919,7 @@ mod tests {
             "- [ ] [[永夜]] を進める",
             "    - 2026-07-31 22:00: 前日の作業",
         ]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-07-31"]);
     }
 
@@ -923,7 +930,7 @@ mod tests {
             "- [ ] [[永夜]] を進める",
             "- 2026-08-01 10:00: 無関係のメモ",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
@@ -934,13 +941,13 @@ mod tests {
             "- [ ] 無関係のタスク",
             "    - 2026-08-01 10:00: 無関係の作業",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
     fn test_journal_work_multiple_refs_on_one_task() {
         let l = lines(&["- [x] [[永夜]] と [[在庫管理]] をまとめて片付けた"]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
         assert_eq!(work_dates(&works, "在庫管理"), ["2026-08-01"]);
     }
@@ -953,13 +960,13 @@ mod tests {
             "```",
             "- [ ] 何もしていない",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
     fn test_journal_work_strips_md_extension_from_link() {
         let l = lines(&["- [x] [[永夜.md]] を進めた"]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
     }
 
@@ -977,7 +984,7 @@ mod tests {
             "- 定例ミーティング",
             "    - 2026-08-01 10:00-11:00: 進捗共有",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
@@ -988,7 +995,7 @@ mod tests {
             "- 打ち合わせメモ",
             "    - 2026-08-01 14:00: 別件",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     #[test]
@@ -1000,7 +1007,7 @@ mod tests {
             "",
             "    - 2026-08-01 10:00: 着手",
         ]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "永夜"), ["2026-08-01"]);
     }
 
@@ -1012,7 +1019,7 @@ mod tests {
             "    - [ ] [[子PJ]] の下ごしらえ",
             "        - 2026-08-01 10:00: 子だけ着手",
         ]);
-        let works = journal_work(&l, "2026-08-01");
+        let works = journal_work(&l, &crate::DocumentHeader::journal("2026-08-01"));
         assert_eq!(work_dates(&works, "子PJ"), ["2026-08-01"]);
         assert!(work_dates(&works, "親PJ").is_empty());
     }
@@ -1025,7 +1032,7 @@ mod tests {
             "- [ ] [[在庫管理]] を進める",
             "　- 2026-08-01 10:00: 全角スペース字下げ",
         ]);
-        assert!(journal_work(&l, "2026-08-01").is_empty());
+        assert!(journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")).is_empty());
     }
 
     // --- collect_document_refs ---
@@ -1066,7 +1073,7 @@ mod tests {
         // 実働 ⊆ 言及（I-17）。実働側が拾う参照は必ず言及側にも現れる
         let l = lines(&["# 2026-08-01", "- [x] [[在庫管理]] を進める #永夜"]);
         let doc_refs = collect_document_refs(&l);
-        for w in journal_work(&l, "2026-08-01") {
+        for w in journal_work(&l, &crate::DocumentHeader::journal("2026-08-01")) {
             for r in w.refs {
                 assert!(doc_refs.contains(&r), "{r} が言及側に無い");
             }

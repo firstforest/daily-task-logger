@@ -67,12 +67,72 @@ pub struct ParsedTaskWithDate {
 
 // === Tree types ===
 
+/// Document のヘッダ — 本文（`lines`）とは別に、パスから決まる情報（docs/domain.md §1）。
+///
+/// 解析関数はファイルシステムに触れないので（design.md P1）、日付もパスも呼び出し側が
+/// 引数で渡す。渡す値が増えるほど取り違えが起きやすく、とくに `journal_work` は
+/// 「その文書の日付」と「基準日（`today`）」という同じ形の 2 つの日付を扱うため、
+/// 素の `&str` のままだと取り違えてもコンパイルが通ってしまう。
+/// 文書由来の値だけをこの型にまとめて区別する（docs/design.md G-8）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentHeader {
+    pub file_name: String,
+    pub file_uri: String,
+    /// パスが `journal/<YYYY>/<MM>/<YYYY-MM-DD>.md` のときだけ `Some`
+    pub date: Option<String>,
+}
+
+impl DocumentHeader {
+    /// ジャーナル 1 日分のヘッダ。
+    pub fn journal(date: impl Into<String>) -> Self {
+        let date = date.into();
+        DocumentHeader {
+            file_name: format!("{date}.md"),
+            file_uri: String::new(),
+            date: Some(date),
+        }
+    }
+
+    /// ファイル名と URI からヘッダを組み立てる。
+    ///
+    /// 日付はパス規約（`journal/<YYYY>/<MM>/<YYYY-MM-DD>.md`）だけで決まる（domain.md §1）。
+    /// 本文の日付見出しからは受け取らない。あれは走査中の文脈であって文書の属性ではない。
+    pub fn from_path(file_name: &str, file_uri: &str) -> Self {
+        DocumentHeader {
+            date: journal_date_of(file_name, file_uri),
+            file_name: file_name.to_string(),
+            file_uri: file_uri.to_string(),
+        }
+    }
+}
+
+/// パスがジャーナル規約に一致するときだけ、その文書の日付を返す。
+///
+/// ファイル名だけで判定すると `note/2026-08-01.md`（その日に取ったメモなど）が
+/// ジャーナル扱いになるので、`journal/` 配下であることも要求する。
+fn journal_date_of(file_name: &str, file_uri: &str) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
+
+    let stem = file_name.strip_suffix(".md")?;
+    if !re.is_match(stem) || !file_uri.contains("/journal/") {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FileInput {
     pub file_name: String,
     pub file_uri: String,
     pub lines: Vec<String>,
+}
+
+impl FileInput {
+    pub fn header(&self) -> DocumentHeader {
+        DocumentHeader::from_path(&self.file_name, &self.file_uri)
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -272,6 +332,7 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
     let mut date_map: HashMap<String, Vec<(String, String, Vec<TreeTaskData>)>> = HashMap::new();
 
     for file in &files {
+        let doc = file.header();
         let parsed = parse_all_dates_internal(&file.lines);
         if parsed.is_empty() {
             continue;
@@ -294,7 +355,7 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
                     text: t.text,
                     body,
                     meta,
-                    file_uri: file.file_uri.clone(),
+                    file_uri: doc.file_uri.clone(),
                     line: t.line,
                     log: t.log,
                     date: t.date,
@@ -304,8 +365,8 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
 
         for (date, tasks) in by_date {
             date_map.entry(date).or_default().push((
-                file.file_name.clone(),
-                file.file_uri.clone(),
+                doc.file_name.clone(),
+                doc.file_uri.clone(),
                 tasks,
             ));
         }
@@ -551,9 +612,10 @@ pub fn build_schedule_data_internal(
     let mut all_entries: Vec<ScheduleEntry> = Vec::new();
 
     for file in &files {
+        let doc = file.header();
         let mut entries = parse_schedule_internal(&file.lines, target_date);
         for entry in &mut entries {
-            entry.file_uri = file.file_uri.clone();
+            entry.file_uri = doc.file_uri.clone();
         }
         all_entries.extend(entries);
     }
@@ -1698,6 +1760,36 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].date, "2026-03-21");
         assert_eq!(result[0].log, "ログ");
+    }
+
+    // --- DocumentHeader tests ---
+
+    #[test]
+    fn test_header_takes_date_from_journal_path() {
+        let h = DocumentHeader::from_path(
+            "2026-08-01.md",
+            "file:///Users/u/taski/journal/2026/08/2026-08-01.md",
+        );
+        assert_eq!(h.date.as_deref(), Some("2026-08-01"));
+    }
+
+    #[test]
+    fn test_header_date_requires_journal_directory() {
+        // その日に取ったメモを `note/2026-08-01.md` に置いてもジャーナルにはしない
+        let h = DocumentHeader::from_path(
+            "2026-08-01.md",
+            "file:///Users/u/taski/note/2026-08-01.md",
+        );
+        assert_eq!(h.date, None);
+    }
+
+    #[test]
+    fn test_header_date_requires_date_shaped_name() {
+        let h = DocumentHeader::from_path(
+            "メモ.md",
+            "file:///Users/u/taski/journal/2026/08/メモ.md",
+        );
+        assert_eq!(h.date, None);
     }
 
     // --- parse_front_matter tests ---
