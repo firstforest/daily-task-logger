@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[docs/architecture.md](docs/architecture.md)** — 全体構成、Cargo ワークスペース構成、パースパイプライン、主要ソースファイル、ビルド構成・配布フロー。
 - **[docs/syntax.md](docs/syntax.md)** — **記法の唯一の規範**。文書（パス規約・front matter・コードフェンス）、行の文法（EBNF。タスク・ログ・日付見出し・時刻メモ）、インデントと帰属、行内の記法（Wiki リンク・タグ・行末括弧）、正規化と照合、誤検出しない書き方、記法の弱さ（N-1〜N-9）、目標形の記法（配下の属性行。未実装）。
 - **[docs/domain.md](docs/domain.md)** — ドメインモデル（**目標形**）。Document / Project / Task / Log / Observation に何があり、どう関係するか。エンティティ、Project の役割、関係の 4 層、同一性と参照の解決、観測値の導出。
-- **[docs/design.md](docs/design.md)** — 現状の実装。設計原則（P1〜P5）、語彙と Rust 表現、走査のセマンティクス、Rust の型定義、不変条件（I-1〜I-22）、写像の事前条件、既知の弱さ（W-1〜W-8）、ドメインモデルとのずれ（G-1〜G-12）。
+- **[docs/design.md](docs/design.md)** — 現状の実装。設計原則（P1〜P5）、語彙と Rust 表現、走査のセマンティクス、Rust の型定義、不変条件（I-1〜I-22）、写像の事前条件、既知の弱さ（W-1〜W-8）、ドメインモデルとのずれ（G-1〜G-13）。
 
 機能・フォーマット・設定・アーキテクチャに関する記述を更新する場合は、上記 docs を更新すること（本ファイルには重複させない）。
 
