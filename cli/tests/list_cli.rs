@@ -106,6 +106,49 @@ fn test_matching_tag_still_returns_tasks() {
 }
 
 #[test]
+fn test_tasks_carry_decision_meta() {
+    let home = TempHome::new("decision-meta");
+    let root = home.path();
+    write_md(
+        root,
+        "tasks.md",
+        "# tasks\n\
+         \n\
+         - [ ] 資料をまとめる（30分・軽・@PC）\n\
+         \x20   - 2026-07-20: 着手\n\
+         - [ ] テクスチャペイント（髪・服・顔）\n\
+         \x20   - 2026-07-20: 着手\n",
+    );
+
+    let out = run_list(root, &["--format", "json"]);
+    assert!(out.success);
+    let json: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let tasks: Vec<serde_json::Value> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["fileGroups"].as_array().unwrap())
+        .flat_map(|f| f["tasks"].as_array().unwrap())
+        .cloned()
+        .collect();
+
+    let with_meta = tasks
+        .iter()
+        .find(|t| t["text"].as_str().unwrap().starts_with("資料"))
+        .expect("タスクが見つかりません");
+    assert_eq!(with_meta["body"], "資料をまとめる");
+    assert_eq!(with_meta["meta"], "30分・軽・@PC");
+
+    // 列挙は判断メタデータではない。skill 側で切り出し直させないための検証済みルール
+    let enumeration = tasks
+        .iter()
+        .find(|t| t["text"].as_str().unwrap().starts_with("テクスチャ"))
+        .expect("タスクが見つかりません");
+    assert_eq!(enumeration["body"], "テクスチャペイント（髪・服・顔）");
+    assert_eq!(enumeration["meta"], serde_json::Value::Null);
+}
+
+#[test]
 fn test_unsupported_format_fails_even_with_no_match() {
     let home = TempHome::new("bad-format");
     let root = home.path();

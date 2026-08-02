@@ -79,6 +79,10 @@ pub struct FileInput {
 pub struct TreeTaskData {
     pub status: TaskStatus,
     pub text: String,
+    /// 判断メタデータを取り除いたタスク本文（[`pj::split_decision_meta`]）
+    pub body: String,
+    /// 行末の判断メタデータ（`30分・軽・@PC`）。無ければ `None`
+    pub meta: Option<String>,
     pub file_uri: String,
     pub line: usize,
     pub log: String,
@@ -275,12 +279,20 @@ pub fn build_tree_data_internal(files: Vec<FileInput>, today_str: &str) -> Vec<T
         // Group by date within this file
         let mut by_date: HashMap<String, Vec<TreeTaskData>> = HashMap::new();
         for t in parsed {
+            // 判断メタデータの分離は PJ ノートの `## 次の予定` と同じルールを使う。
+            // 利用側（skill 等）で切り出し直させると判定が二重実装になるため。
+            let (body, meta) = match pj::split_decision_meta(&t.text) {
+                Some((body, meta)) => (body, Some(meta)),
+                None => (t.text.clone(), None),
+            };
             by_date
                 .entry(t.date.clone())
                 .or_default()
                 .push(TreeTaskData {
                     status: t.status,
                     text: t.text,
+                    body,
+                    meta,
                     file_uri: file.file_uri.clone(),
                     line: t.line,
                     log: t.log,
@@ -1008,6 +1020,33 @@ mod tests {
         // 未完了が先
         assert_eq!(tasks[0].status, TaskStatus::Incomplete);
         assert_eq!(tasks[1].status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn test_build_tree_data_splits_decision_meta() {
+        // `taski pj` と同じルールで判断メタデータを分離する。
+        // 利用側で切り出し直させると同じ判定の二重実装になるため。
+        let files = vec![FileInput {
+            file_name: s("test.md"),
+            file_uri: s("file:///test.md"),
+            lines: lines(&[
+                "- [ ] 資料をまとめる（30分・軽・@PC）",
+                "    - 2026-02-01: ログ1",
+                "- [ ] テクスチャペイント（髪・服・顔）",
+                "    - 2026-02-01: ログ2",
+            ]),
+        }];
+        let result = build_tree_data_internal(files, "2026-02-01");
+        let tasks = &result[0].file_groups[0].tasks;
+        assert_eq!(tasks.len(), 2);
+
+        assert_eq!(tasks[0].text, "資料をまとめる（30分・軽・@PC）");
+        assert_eq!(tasks[0].body, "資料をまとめる");
+        assert_eq!(tasks[0].meta.as_deref(), Some("30分・軽・@PC"));
+
+        // 列挙はメタデータではない。body は原文のまま
+        assert_eq!(tasks[1].body, "テクスチャペイント（髪・服・顔）");
+        assert_eq!(tasks[1].meta, None);
     }
 
     #[test]
